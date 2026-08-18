@@ -1,0 +1,7 @@
+{
+  "name": "BSM Developer Console",
+  "description": "Private developer administration platform for managing all customer installations of Business Sales Manager (BSM).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
