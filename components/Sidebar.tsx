@@ -16,11 +16,14 @@ import {
   ChevronRight,
   ShieldAlert,
   UserCheck,
+  LogOut,
 } from 'lucide-react';
 import { DeveloperRole } from '@/lib/types';
+import { useAuth } from '@/lib/auth-context';
 
 export function Sidebar() {
-  const { activeTab, setActiveTab, currentDeveloper, setCurrentDeveloper, developers } = useConsole();
+  const { activeTab, setActiveTab, currentDeveloper, developers } = useConsole();
+  const { signOut } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
   const [showRoleSelector, setShowRoleSelector] = useState(false);
 
@@ -105,14 +108,11 @@ export function Sidebar() {
       <div className="p-4 border-t border-slate-800 relative bg-slate-950">
         {showRoleSelector && !collapsed && (
           <div className="absolute bottom-full left-4 right-4 mb-2 bg-slate-900 border border-slate-700 rounded-xl p-2 shadow-2xl z-50 space-y-1">
-            <div className="text-[10px] uppercase font-semibold text-slate-400 px-2 py-1">Switch Role</div>
+            <div className="text-[10px] uppercase font-semibold text-slate-400 px-2 py-1">Signed-in developer</div>
             {developers.map((dev) => (
               <button
                 key={dev.id}
-                onClick={() => {
-                  setCurrentDeveloper(dev);
-                  setShowRoleSelector(false);
-                }}
+                onClick={() => setShowRoleSelector(false)}
                 className={`w-full text-left px-2.5 py-2 rounded-lg text-xs flex items-center justify-between transition-colors ${
                   currentDeveloper.id === dev.id ? 'bg-blue-600/20 text-blue-300 border border-blue-500/30' : 'hover:bg-slate-800 text-slate-300'
                 }`}
@@ -143,12 +143,22 @@ export function Sidebar() {
                 </p>
               </div>
             </div>
-            <button
-              onClick={() => setActiveTab('settings')}
-              className="w-full text-left text-xs font-medium hover:text-white py-1 transition-colors"
-            >
-              Account Settings
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setActiveTab('settings')}
+                className="flex-1 text-left text-xs font-medium hover:text-white py-1 transition-colors"
+              >
+                Account Settings
+              </button>
+              <button
+                onClick={() => void signOut()}
+                className="flex items-center gap-1 text-xs font-medium text-slate-400 hover:text-white py-1 transition-colors"
+                title="Sign out"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                Sign out
+              </button>
+            </div>
           </div>
         ) : (
           <div className="flex justify-center">
