@@ -5,7 +5,7 @@ import { useConsole } from '@/lib/console-context';
 import { Shield, UserCheck, Lock } from 'lucide-react';
 
 export function SettingsModule() {
-  const { currentDeveloper, developers, setCurrentDeveloper } = useConsole();
+  const { currentDeveloper } = useConsole();
 
   return (
     <div className="space-y-6 max-w-4xl">
@@ -67,23 +67,8 @@ export function SettingsModule() {
           </div>
         </div>
 
-        <div className="pt-4 border-t border-gray-100 flex items-center justify-between">
-          <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">Switch active role for testing permissions:</span>
-          <div className="flex gap-2">
-            {developers.map((dev) => (
-              <button
-                key={dev.id}
-                onClick={() => setCurrentDeveloper(dev)}
-                className={`px-3 py-1.5 rounded text-xs font-bold uppercase tracking-wider border transition-colors ${
-                  currentDeveloper.id === dev.id
-                    ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                    : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
-                }`}
-              >
-                {dev.role}
-              </button>
-            ))}
-          </div>
+        <div className="pt-4 border-t border-gray-100 text-xs text-gray-500">
+          Active role is managed by the authorized Firestore developer record for <strong className="text-gray-700">{currentDeveloper.email}</strong>.
         </div>
       </div>
 

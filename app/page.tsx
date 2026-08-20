@@ -1,6 +1,8 @@
 'use client';
 
 import React from 'react';
+import { AuthScreen } from '@/components/AuthScreen';
+import { useAuth } from '@/lib/auth-context';
 import { useConsole } from '@/lib/console-context';
 import { Sidebar } from '@/components/Sidebar';
 import { Header } from '@/components/Header';
@@ -15,7 +17,12 @@ import { ActivityModule } from '@/components/modules/ActivityModule';
 import { SettingsModule } from '@/components/modules/SettingsModule';
 
 export default function Page() {
+  const { status } = useAuth();
   const { activeTab } = useConsole();
+
+  if (status !== 'authorized') {
+    return <AuthScreen />;
+  }
 
   return (
     <div className="flex h-screen bg-gray-50 text-gray-900 overflow-hidden">
