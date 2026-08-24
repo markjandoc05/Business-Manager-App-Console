@@ -3,8 +3,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
-import { activateLicense, cancelLicense, changePlan, changeSeatLimit, extendTrial, reactivateOrganization, suspendOrganization } from '@/lib/console-api';
-import { fetchMembers, fetchOrganization } from '@/lib/organization-data';
+import { activateLicense, changePlan, changeSeatLimit, expireLicense, extendTrial, reactivateOrganization, renewLicense, suspendOrganization } from '@/lib/console-api';
+import { getOrganization } from '@/lib/console-api';
 import { evaluateOrganizationLicense } from '@/lib/license';
 import { Organization, OrganizationMember } from '@/lib/types';
 import { ConsolePage } from '../ConsoleShell';
@@ -23,8 +23,8 @@ export function OrganizationDetailModule({ orgId }: { orgId: string }) {
   const [busy, setBusy] = useState(false);
   const load = useCallback(async () => {
     setError(null);
-    const [organization, organizationMembers] = await Promise.all([fetchOrganization(orgId), fetchMembers(orgId)]);
-    setOrg(organization); setMembers(organizationMembers);
+    const result = await getOrganization(orgId);
+    setOrg(result.organization); setMembers(result.members);
   }, [orgId]);
   // Data loading is an external synchronization; the state updates are intentional here.
   // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -36,20 +36,26 @@ export function OrganizationDetailModule({ orgId }: { orgId: string }) {
     if (!dialog) return;
     setBusy(true); setMessage(null);
     try {
-      if (dialog === 'ACTIVATE') await activateLicense(orgId, { planId: payload.planId || 'SOLO', seatLimit: payload.seatLimit || 1, expiresAt: new Date(`${payload.date}T23:59:59.000Z`).toISOString() });
+      if (dialog === 'ACTIVATE') await activateLicense(orgId, { plan: payload.plan || 'STARTER', maxUsers: payload.maxUsers || 1, subscriptionStartedAt: new Date(`${payload.startDate || payload.date}T00:00:00.000Z`).toISOString(), endsAt: new Date(`${payload.date}T23:59:59.000Z`).toISOString() });
+      if (dialog === 'RENEW') await renewLicense(orgId, { plan: payload.plan, maxUsers: payload.maxUsers, subscriptionStartedAt: new Date(`${payload.startDate}T00:00:00.000Z`).toISOString(), subscriptionEndsAt: new Date(`${payload.date}T23:59:59.000Z`).toISOString() });
       if (dialog === 'EXTEND_TRIAL') await extendTrial(orgId, new Date(`${payload.date}T23:59:59.000Z`).toISOString());
-      if (dialog === 'CHANGE_PLAN') await changePlan(orgId, payload.planId || 'TEAM');
-      if (dialog === 'CHANGE_SEAT_LIMIT') await changeSeatLimit(orgId, payload.seatLimit || 1);
+      if (dialog === 'CHANGE_PLAN') await changePlan(orgId, payload.plan || 'TEAM');
+      if (dialog === 'CHANGE_SEAT_LIMIT') await changeSeatLimit(orgId, payload.maxUsers || 1);
       if (dialog === 'SUSPEND') await suspendOrganization(orgId, payload.reason);
+      if (dialog === 'EXPIRE') await expireLicense(orgId);
       if (dialog === 'REACTIVATE') await reactivateOrganization(orgId);
-      if (dialog === 'CANCEL') await cancelLicense(orgId);
       await load(); setDialog(null); setMessage('Administrative change completed and organization state refreshed.');
     } catch (e) { setMessage(e instanceof Error ? e.message : 'The administrative request failed.'); }
     finally { setBusy(false); }
   };
-  const licenseRows = [['Plan', org.license?.planId || '—'], ['Seat limit', org.license?.seatLimit ?? '—'], ['Trial start', formatDate(org.license?.trialStartedAt)], ['Trial end', formatDate(org.license?.trialEndsAt)], ['Subscription start', formatDate(org.license?.startsAt)], ['Expiration', formatDate(org.license?.expiresAt)], ['Grace period', formatDate(org.license?.graceEndsAt)], ['Updated', formatDate(org.license?.updatedAt)]];
-  const actions: LicenseAction[] = ['ACTIVATE', 'EXTEND_TRIAL', 'CHANGE_PLAN', 'CHANGE_SEAT_LIMIT', 'SUSPEND', 'REACTIVATE', 'CANCEL'];
-  if (platformAdmin?.role !== 'SUPER_ADMIN') actions.length = 0;
+  const licenseRows = [['Plan', org.license?.plan || '—'], ['Maximum users', org.license?.maxUsers ?? '—'], ['Trial start', formatDate(org.license?.trialStartedAt)], ['Trial end', formatDate(org.license?.trialEndsAt)], ['Subscription start', formatDate(org.license?.subscriptionStartedAt)], ['Expiration', formatDate(org.license?.subscriptionEndsAt)], ['Write enabled', org.license ? (evaluation.accessAllowed ? 'YES' : 'NO') : '—'], ['Updated', formatDate(org.license?.updatedAt)]];
+  const actions: LicenseAction[] = platformAdmin?.role !== 'SUPER_ADMIN' ? [] : evaluation.status === 'UNKNOWN'
+    ? ['ACTIVATE']
+    : evaluation.status === 'TRIAL'
+      ? ['ACTIVATE', 'EXTEND_TRIAL', 'CHANGE_SEAT_LIMIT', 'SUSPEND', 'EXPIRE']
+      : evaluation.status === 'ACTIVE'
+        ? ['RENEW', 'CHANGE_PLAN', 'CHANGE_SEAT_LIMIT', 'SUSPEND', 'EXPIRE']
+        : ['RENEW', 'CHANGE_SEAT_LIMIT', 'REACTIVATE'];
   return (
     <ConsolePage title={org.name} description={org.slug ? `/${org.slug}` : 'Organization details'} action={<div className="flex gap-4"><button onClick={() => void load()} className="flex items-center gap-2 text-sm font-bold text-gray-500"><RefreshCw className="h-4 w-4" />Refresh</button><button onClick={() => router.push('/organizations')} className="flex items-center gap-2 text-sm font-bold text-blue-600"><ArrowLeft className="h-4 w-4" />Back</button></div>}>
       <div className="space-y-6">

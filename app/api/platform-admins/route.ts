@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { errorResponse, successResponse } from '@/lib/server/api-errors';
+import { errorResponse, successResponse } from '@/lib/server/api-error-response';
 import { requirePlatformAdmin } from '@/lib/server/platform-admin';
 import { createPlatformAdmin, listPlatformAdmins } from '@/lib/server/platform-admin-service';
 
