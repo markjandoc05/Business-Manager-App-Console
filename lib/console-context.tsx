@@ -6,7 +6,6 @@ import React, {
   useState,
   ReactNode,
 } from 'react';
-import { useAuth } from './auth-context';
 
 import {
   Customer,
@@ -138,8 +137,7 @@ export function ConsoleProvider({
 }: {
   children: ReactNode;
 }) {
-  const { developer } = useAuth();
-  const currentDeveloper = developer ?? INITIAL_DEVELOPERS[0];
+  const currentDeveloper = INITIAL_DEVELOPERS[0];
 
   const [activeTab, setActiveTab] =
     useState<string>('dashboard');
@@ -795,7 +793,7 @@ export function ConsoleProvider({
     <ConsoleContext.Provider
       value={{
         currentDeveloper,
-        developers: developer ? [developer] : [],
+        developers: INITIAL_DEVELOPERS,
 
         customers,
 

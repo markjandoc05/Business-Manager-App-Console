@@ -8,3 +8,6 @@ coverage/
 # Local environment files
 .env.local
 .env*.local
+service-account*.json
+firebase-admin*.json
+credentials*.json
