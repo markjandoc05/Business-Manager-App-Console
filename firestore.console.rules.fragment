@@ -1,0 +1,39 @@
+// BSM Console rules fragment for the shared bsm-client-app-web Firestore.
+// Merge into the existing Client App rules. This file is intentionally not a
+// complete deployment file and must not replace the shared ruleset.
+
+function isActivePlatformAdmin() {
+  return request.auth != null
+    && exists(/databases/$(database)/documents/platformAdmins/$(request.auth.uid))
+    && get(/databases/$(database)/documents/platformAdmins/$(request.auth.uid)).data.status == 'ACTIVE'
+    && (
+      get(/databases/$(database)/documents/platformAdmins/$(request.auth.uid)).data.role == 'SUPER_ADMIN'
+      || get(/databases/$(database)/documents/platformAdmins/$(request.auth.uid)).data.role == 'SUPPORT'
+    );
+}
+
+// Add these match blocks at the same database/document scope as the existing
+// Client App matches. Browser writes remain disabled; mutations use the secure
+// server-side Admin SDK API.
+match /platformAdmins/{adminId} {
+  allow read: if isActivePlatformAdmin() && request.auth.uid == adminId;
+  allow write: if false;
+}
+
+match /organizations/{organizationId} {
+  allow read: if isActivePlatformAdmin();
+  match /members/{memberId} {
+    allow read: if isActivePlatformAdmin();
+  }
+  match /settings/{settingId} {
+    allow read: if isActivePlatformAdmin();
+  }
+}
+
+match /organizationSlugs/{slug} {
+  allow read: if isActivePlatformAdmin();
+}
+
+match /platformAuditLogs/{logId} {
+  allow read: if isActivePlatformAdmin();
+}

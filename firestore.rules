@@ -1,9 +1,42 @@
+// WARNING: This file contains Console-only rules for a shared Firebase project.
+// Do not deploy it by itself: merge the Console fragment into the authoritative
+// Client App rules first, or the Client App tenant rules could be overwritten.
+
 rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /developers/{developerId} {
-      allow read: if request.auth != null && request.auth.uid == developerId;
+    function isPlatformAdmin() {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/platformAdmins/$(request.auth.uid))
+        && get(/databases/$(database)/documents/platformAdmins/$(request.auth.uid)).data.status == 'ACTIVE';
+    }
+
+    match /platformAdmins/{adminId} {
+      allow read: if request.auth != null && request.auth.uid == adminId;
+      allow write: if false;
+    }
+
+    match /organizations/{organizationId} {
+      allow read: if isPlatformAdmin();
+      allow write: if false;
+      match /members/{memberId} {
+        allow read: if isPlatformAdmin();
+        allow write: if false;
+      }
+      match /settings/{settingId} {
+        allow read: if isPlatformAdmin();
+        allow write: if false;
+      }
+    }
+
+    match /organizationSlugs/{slug} {
+      allow read: if isPlatformAdmin();
+      allow write: if false;
+    }
+
+    match /platformAuditLogs/{logId} {
+      allow read: if isPlatformAdmin();
       allow write: if false;
     }
   }

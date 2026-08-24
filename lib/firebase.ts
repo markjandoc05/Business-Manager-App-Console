@@ -11,6 +11,11 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
+const expectedProjectId = 'bsm-client-app-web';
+if (typeof window !== 'undefined' && firebaseConfig.projectId !== expectedProjectId) {
+  throw new Error(`Firebase project mismatch. Expected: ${expectedProjectId}. Client: ${firebaseConfig.projectId || 'missing'}.`);
+}
+
 const firebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
 export const firebaseAuth = getAuth(firebaseApp);

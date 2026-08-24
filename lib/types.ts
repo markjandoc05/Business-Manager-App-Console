@@ -6,6 +6,69 @@ export type DeploymentStatus = 'CURRENT' | 'UPDATE_AVAILABLE' | 'DEPLOYING' | 'F
 
 export type DeveloperRole = 'OWNER' | 'DEVELOPER' | 'SUPPORT';
 
+export type PlatformAdminRole = 'SUPER_ADMIN' | 'SUPPORT';
+export type PlatformAdminStatus = 'ACTIVE' | 'DISABLED';
+
+export interface PlatformAdmin {
+  id: string;
+  email: string;
+  displayName: string;
+  role: PlatformAdminRole;
+  status: PlatformAdminStatus;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export type OrganizationLicenseStatus =
+  | 'TRIAL'
+  | 'ACTIVE'
+  | 'PAST_DUE'
+  | 'EXPIRED'
+  | 'SUSPENDED'
+  | 'CANCELLED';
+
+export type OrganizationPlan = 'FREE_TRIAL' | 'SOLO' | 'TEAM';
+
+export interface OrganizationLicense {
+  planId?: OrganizationPlan;
+  status?: OrganizationLicenseStatus;
+  seatLimit?: number;
+  trialStartedAt?: string;
+  trialEndsAt?: string;
+  startsAt?: string;
+  expiresAt?: string;
+  graceEndsAt?: string;
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
+export interface Organization {
+  id: string;
+  name: string;
+  slug?: string;
+  businessType?: string;
+  currency?: string;
+  timezone?: string;
+  ownerEmail?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  license?: OrganizationLicense;
+}
+
+export type OrganizationMemberRole = 'ADMIN' | 'MANAGER' | 'USER';
+export type OrganizationMemberStatus = 'ACTIVE' | 'PENDING' | 'DISABLED';
+
+export interface OrganizationMember {
+  id: string;
+  userId?: string;
+  name?: string;
+  email?: string;
+  role: OrganizationMemberRole;
+  status: OrganizationMemberStatus;
+  joinedAt?: string;
+  lastLogin?: string;
+}
+
 export interface DeveloperUser {
   id: string;
   name: string;

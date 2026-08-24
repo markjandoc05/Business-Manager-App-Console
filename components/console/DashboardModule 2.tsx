@@ -1,0 +1,9 @@
+'use client';
+
+import React, { useEffect, useState } from 'react';
+import { fetchOrganizations } from '@/lib/organization-data';
+import { evaluateOrganizationLicense } from '@/lib/license';
+import { Organization } from '@/lib/types';
+import { ErrorState, LoadingState, StatusBadge } from './ConsolePrimitives';
+
+export function DashboardModule() { const [items, setItems] = useState<Organization[]>([]); const [error, setError] = useState<string | null>(null); useEffect(() => { fetchOrganizations().then(setItems).catch((e) => setError(e instanceof Error ? e.message : 'Unable to load dashboard data.')); }, []); if (error) return <ErrorState message={error} />; if (!items.length && !error) return <LoadingState />; const evaluations = items.map((organization) => evaluateOrganizationLicense(organization)); const cards = [['Total Organizations', items.length], ['Active', evaluations.filter((e) => e.status === 'ACTIVE').length], ['Trials', evaluations.filter((e) => e.status === 'TRIAL').length], ['Past Due', evaluations.filter((e) => e.status === 'PAST_DUE').length], ['Restricted', evaluations.filter((e) => !e.accessAllowed).length]]; return <div className="space-y-6"><div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">{cards.map(([label, value]) => <div key={label} className="rounded-xl border border-gray-200 bg-white p-5"><p className="text-xs font-bold uppercase tracking-wider text-gray-500">{label}</p><p className="mt-3 text-3xl font-black text-gray-950">{value}</p></div>)}</div><div className="rounded-xl border border-gray-200 bg-white p-6"><h2 className="font-black text-gray-950">Platform overview</h2><p className="mt-1 text-sm text-gray-500">This dashboard reads organization metadata only; tenant business collections are not loaded.</p><div className="mt-5 flex flex-wrap gap-2">{evaluations.map((evaluation, index) => <StatusBadge key={`${evaluation.status}-${index}`} status={evaluation.status} />)}</div></div></div>; }
