@@ -19,25 +19,20 @@ export interface PlatformAdmin {
   updatedAt?: string;
 }
 
-export type OrganizationLicenseStatus =
-  | 'TRIAL'
-  | 'ACTIVE'
-  | 'PAST_DUE'
-  | 'EXPIRED'
-  | 'SUSPENDED'
-  | 'CANCELLED';
+export type OrganizationLicenseStatus = 'TRIAL' | 'ACTIVE' | 'EXPIRED' | 'SUSPENDED';
 
-export type OrganizationPlan = 'FREE_TRIAL' | 'SOLO' | 'TEAM';
+export type OrganizationPlan = 'TRIAL' | 'STARTER' | 'TEAM' | 'LEGACY';
 
 export interface OrganizationLicense {
-  planId?: OrganizationPlan;
+  plan?: OrganizationPlan;
   status?: OrganizationLicenseStatus;
-  seatLimit?: number;
+  maxUsers?: number;
+  features?: Record<string, boolean>;
   trialStartedAt?: string;
   trialEndsAt?: string;
-  startsAt?: string;
-  expiresAt?: string;
-  graceEndsAt?: string;
+  subscriptionStartedAt?: string;
+  subscriptionEndsAt?: string;
+  createdAt?: string;
   updatedAt?: string;
   updatedBy?: string;
 }
@@ -47,6 +42,13 @@ export interface Organization {
   name: string;
   slug?: string;
   businessType?: string;
+  status?: 'trial' | 'active' | 'expired' | 'suspended';
+  plan?: string;
+  subscriptionStatus?: string;
+  maxUsers?: number;
+  licenseStatus?: OrganizationLicenseStatus;
+  licenseWriteEnabled?: boolean;
+  licenseExpiresAt?: string;
   currency?: string;
   timezone?: string;
   ownerEmail?: string;

@@ -1,4 +1,4 @@
-import { NextRequest } from 'next/server';
+import type { NextRequest } from 'next/server';
 import { ApiError } from './api-errors';
 
 export async function readJsonBody(request: NextRequest): Promise<Record<string, unknown>> {

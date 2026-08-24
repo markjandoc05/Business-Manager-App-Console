@@ -1,14 +1,14 @@
 import { NextRequest } from 'next/server';
-import { errorResponse, successResponse } from './api-errors';
-import { mutateLicense } from './license-service';
-import { requirePlatformAdmin } from './platform-admin';
+import './firebase-admin';
+import { errorResponse, successResponse } from './api-error-response';
+import { handleLicenseMutation } from './license-handler';
 import { readJsonBody } from './request';
 
-export async function handleLicenseRequest(request: NextRequest, orgId: string, action: Parameters<typeof mutateLicense>[1]) {
+export async function handleLicenseRequest(request: NextRequest, orgId: string, action: Parameters<typeof handleLicenseMutation>[2]) {
   try {
-    const actor = await requirePlatformAdmin(request, ['SUPER_ADMIN']);
-    const body = await readJsonBody(request);
-    return successResponse(await mutateLicense(orgId, action, body, actor));
+    const header = request.headers.get('authorization');
+    const token = header?.startsWith('Bearer ') ? header.slice(7).trim() : '';
+    return successResponse(await handleLicenseMutation(token, orgId, action, () => readJsonBody(request)));
   } catch (error) {
     return errorResponse(error);
   }

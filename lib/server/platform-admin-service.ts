@@ -20,10 +20,13 @@ export async function createPlatformAdmin(request: NextRequest, actor: Authentic
   const status = enumValue(body.status ?? 'ACTIVE', 'status', STATUSES);
   const authUser = await adminAuth.getUser(uid).catch(() => { throw new ApiError('NOT_FOUND', 'Firebase Authentication user not found.', 404); });
   const ref = adminDb.collection('platformAdmins').doc(uid);
-  const existing = await ref.get();
-  if (existing.exists) throw new ApiError('CONFLICT', 'A platform administrator record already exists for this UID.', 409);
-  await ref.set({ email: authUser.email || '', displayName: authUser.displayName || '', role, status, createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(), createdBy: actor.uid, updatedBy: actor.uid });
-  await adminDb.collection('platformAuditLogs').add({ action: 'PLATFORM_ADMIN_ADDED', actorUid: actor.uid, actorEmail: actor.email, actorRole: actor.role, targetType: 'PLATFORM_ADMIN', targetId: uid, previousValue: null, newValue: { email: authUser.email || '', displayName: authUser.displayName || '', role, status }, metadata: {}, createdAt: FieldValue.serverTimestamp() });
+  const auditRef = adminDb.collection('platformAuditLogs').doc();
+  await adminDb.runTransaction(async (transaction) => {
+    const existing = await transaction.get(ref);
+    if (existing.exists) throw new ApiError('CONFLICT', 'A platform administrator record already exists for this UID.', 409);
+    transaction.set(ref, { email: authUser.email || '', displayName: authUser.displayName || '', role, status, createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(), createdBy: actor.uid, updatedBy: actor.uid });
+    transaction.set(auditRef, { action: 'PLATFORM_ADMIN_ADDED', actorUid: actor.uid, actorEmail: actor.email, actorRole: actor.role, targetType: 'PLATFORM_ADMIN', targetId: uid, previousValue: null, newValue: { email: authUser.email || '', displayName: authUser.displayName || '', role, status }, metadata: {}, createdAt: FieldValue.serverTimestamp() });
+  });
   return { uid, email: authUser.email || '', displayName: authUser.displayName || '', role, status };
 }
 

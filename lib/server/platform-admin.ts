@@ -1,7 +1,6 @@
-import { adminAuth, adminDb, assertFirebaseProject } from './firebase-admin';
+import { adminAuth, adminDb, assertFirebaseProject } from './firebase-admin-core';
 import { ApiError } from './api-errors';
-import { NextRequest } from 'next/server';
-import { PlatformAdminRole } from '@/lib/types';
+import type { PlatformAdminRole } from '../types';
 
 export interface AuthenticatedPlatformAdmin {
   uid: string;
@@ -10,10 +9,8 @@ export interface AuthenticatedPlatformAdmin {
   role: PlatformAdminRole;
 }
 
-export async function requirePlatformAdmin(request: NextRequest, roles: PlatformAdminRole[] = ['SUPER_ADMIN', 'SUPPORT']): Promise<AuthenticatedPlatformAdmin> {
-  try { assertFirebaseProject(); } catch (error) { console.error(error instanceof Error ? error.message : 'Firebase project configuration error.'); throw new ApiError('INTERNAL_ERROR', 'Server Firebase project configuration is invalid.', 500); }
-  const header = request.headers.get('authorization');
-  const token = header?.startsWith('Bearer ') ? header.slice(7).trim() : '';
+export async function requirePlatformAdminToken(token: string, roles: PlatformAdminRole[] = ['SUPER_ADMIN', 'SUPPORT']): Promise<AuthenticatedPlatformAdmin> {
+  try { assertFirebaseProject(); } catch (error) { console.error(error instanceof Error ? error.message : 'Firebase project configuration error.'); throw new ApiError('CONSOLE_SERVER_CONFIG_ERROR', 'Unable to load platform data.', 500); }
   if (!token) throw new ApiError('UNAUTHENTICATED', 'A Firebase ID token is required.', 401);
 
   let decoded;
@@ -35,4 +32,10 @@ export async function requirePlatformAdmin(request: NextRequest, roles: Platform
     displayName: decoded.name || (typeof data.displayName === 'string' ? data.displayName : ''),
     role: data.role as PlatformAdminRole,
   };
+}
+
+export async function requirePlatformAdmin(request: { headers: { get(name: string): string | null } }, roles: PlatformAdminRole[] = ['SUPER_ADMIN', 'SUPPORT']) {
+  const header = request.headers.get('authorization');
+  const token = header?.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  return requirePlatformAdminToken(token, roles);
 }
