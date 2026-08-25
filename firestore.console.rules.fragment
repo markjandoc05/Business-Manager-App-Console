@@ -28,6 +28,10 @@ match /organizations/{organizationId} {
   match /settings/{settingId} {
     allow read: if isActivePlatformAdmin();
   }
+  match /usage/{usageId} {
+    allow read: if isActivePlatformAdmin();
+    allow write: if false;
+  }
 }
 
 match /organizationSlugs/{slug} {

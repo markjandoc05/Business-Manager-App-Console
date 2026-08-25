@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { applicationDefault, getApps, initializeApp } from 'firebase-admin/app';
-import { getAuth } from 'firebase-admin/auth';
-import { getFirestore, Timestamp } from 'firebase-admin/firestore';
+import { Timestamp } from 'firebase-admin/firestore';
 import { enforcementMirrors } from '../lib/license-contract.ts';
+import { adminAuth, adminDb } from '../lib/server/firebase-admin-core.ts';
 import { handleLicenseMutation } from '../lib/server/license-handler.ts';
 
 const PROJECT_ID = 'demo-bsm-console';
@@ -16,9 +15,6 @@ if (!firestoreHost || !authHost || projectId !== PROJECT_ID || [firestoreHost, a
   throw new Error('Refusing expiration integration tests without the demo Auth/Firestore emulators.');
 }
 
-const app = getApps()[0] || initializeApp({ projectId: PROJECT_ID, credential: applicationDefault() });
-const adminAuth = getAuth(app);
-const adminDb = getFirestore(app);
 const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 let sequence = 0;
 
@@ -116,7 +112,7 @@ test('expired mutation periods are rejected without canonical, mirror, or audit 
 
   await expectRejectedUnchanged(admin.token, activation, 'activate', {
     plan: 'TEAM', maxUsers: 3, subscriptionStartedAt: past(2).toDate().toISOString(), endsAt: past().toDate().toISOString(),
-  }, 400);
+  }, 409);
 
   const renewal = await seedLicense({ status: 'ACTIVE', plan: 'TEAM', subscriptionEndsAt: future() });
   await expectRejectedUnchanged(admin.token, renewal, 'renew', {
@@ -135,8 +131,8 @@ test('valid future mutations and effective expiration mirrors remain consistent'
   await adminDb.collection('platformAdmins').doc(admin.uid).set({ status: 'ACTIVE', role: 'SUPER_ADMIN', email: `${admin.uid}@example.test` });
 
   const activation = await seedLicense({ status: 'EXPIRED', plan: 'TEAM', subscriptionEndsAt: past() });
-  let result = await call(admin.token, activation.organizationId, 'activate', {
-    plan: 'TEAM', maxUsers: 3, subscriptionStartedAt: future(1).toDate().toISOString(), endsAt: future(365).toDate().toISOString(),
+  let result = await call(admin.token, activation.organizationId, 'renew', {
+    plan: 'TEAM', maxUsers: 3, subscriptionStartedAt: future(1).toDate().toISOString(), subscriptionEndsAt: future(365).toDate().toISOString(),
   });
   assert.equal(result.status, 200, result.error?.message);
   assertMirrors(await state(activation));
@@ -148,8 +144,8 @@ test('valid future mutations and effective expiration mirrors remain consistent'
   assert.equal(result.status, 200, result.error?.message);
   assertMirrors(await state(renewal));
 
-  const trial = await seedLicense({ status: 'EXPIRED', plan: 'TEAM', subscriptionEndsAt: past() });
-  result = await call(admin.token, trial.organizationId, 'activate', { plan: 'TRIAL', maxUsers: 3, endsAt: future(14).toDate().toISOString() });
+  const trial = await seedLicense({ status: 'EXPIRED', plan: 'TRIAL', trialEndsAt: past() });
+  result = await call(admin.token, trial.organizationId, 'extend-trial', { trialEndsAt: future(14).toDate().toISOString() });
   assert.equal(result.status, 200, result.error?.message);
   assertMirrors(await state(trial));
 
@@ -170,7 +166,7 @@ test('valid future mutations and effective expiration mirrors remain consistent'
   assert.equal(expiredState.mirrors.licenseExpiresAt, null);
 
   const wallClockTrial = await seedLicense({ status: 'TRIAL', plan: 'TRIAL', trialEndsAt: past() });
-  result = await call(admin.token, wallClockTrial.organizationId, 'change-seat-limit', { maxUsers: 4 });
+  result = await call(admin.token, wallClockTrial.organizationId, 'extend-trial', { trialEndsAt: future(14).toDate().toISOString() });
   assert.equal(result.status, 200);
   assertMirrors(await state(wallClockTrial));
 });
