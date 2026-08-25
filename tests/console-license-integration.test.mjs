@@ -82,6 +82,7 @@ async function readState() {
       licenseStatus: organization.licenseStatus,
       licenseWriteEnabled: organization.licenseWriteEnabled,
       licenseExpiresAt: organization.licenseExpiresAt,
+      maxUsers: organization.maxUsers,
     },
   });
 }
@@ -104,6 +105,7 @@ async function expectSuccess(token, action, body, expectedStatus, expectedAuditA
   assert.equal(result.body.success, true);
   const state = await readState();
   assert.equal(state.license.status, state.mirrors.licenseStatus);
+  assert.equal(state.license.maxUsers, state.mirrors.maxUsers);
   assert.equal(state.mirrors.licenseWriteEnabled, state.license.status === 'TRIAL' || state.license.status === 'ACTIVE');
   if (state.mirrors.licenseWriteEnabled) {
     const expectedEnd = state.license.status === 'TRIAL' ? state.license.trialEndsAt : state.license.subscriptionEndsAt;
@@ -140,23 +142,42 @@ test('Phase 2 licensing routes authorize real emulator callers and preserve atom
 
   const start = isoDaysFromNow(1);
   const end = isoDaysFromNow(365);
+  const extendedEnd = isoDaysFromNow(500);
   const past = new Date(Date.now() - 60_000).toISOString();
   const extendedTrial = await expectSuccess(superAdmin.idToken, 'extend-trial', { trialEndsAt: isoDaysFromNow(60) }, 200, 'TRIAL_EXTENDED');
   assert.equal(extendedTrial.body.data.license.plan, 'TRIAL');
   assert.equal(extendedTrial.body.data.license.status, 'TRIAL');
   assert.equal(extendedTrial.body.data.mirrors.licenseStatus, 'TRIAL');
   assert.equal(extendedTrial.body.data.mirrors.licenseWriteEnabled, true);
-  await expectRejected(superAdmin.idToken, 'activate', { plan: 'TEAM', maxUsers: 2, subscriptionStartedAt: 'not-a-date', endsAt: end }, 400);
-  await expectRejected(superAdmin.idToken, 'activate', { plan: 'TEAM', maxUsers: 2, subscriptionStartedAt: start, endsAt: past }, 400);
-  await expectRejected(superAdmin.idToken, 'renew', { plan: 'TEAM', subscriptionStartedAt: start, subscriptionEndsAt: past }, 400);
+  await expectRejected(superAdmin.idToken, 'activate', { plan: 'TEAM', maxUsers: 2, subscriptionStartedAt: 'not-a-date', endsAt: end }, 409);
+  await expectRejected(superAdmin.idToken, 'activate', { plan: 'TEAM', maxUsers: 2, subscriptionStartedAt: start, endsAt: past }, 409);
+  await expectRejected(superAdmin.idToken, 'convert-to-paid', { plan: 'INVALID', maxUsers: 2, subscriptionStartedAt: start, subscriptionEndsAt: end }, 400);
+  await expectRejected(superAdmin.idToken, 'extend-subscription', { subscriptionEndsAt: end }, 409);
+  await expectRejected(superAdmin.idToken, 'renew', { plan: 'TEAM', subscriptionStartedAt: start, subscriptionEndsAt: past }, 409);
   await expectRejected(superAdmin.idToken, 'extend-trial', { trialEndsAt: past }, 400);
 
   await expectRejected('', 'activate', { plan: 'TEAM', maxUsers: 2, subscriptionStartedAt: '2026-01-01T00:00:00.000Z', endsAt: '2027-01-01T00:00:00.000Z' }, 401);
   await expectRejected(tenant.idToken, 'activate', { plan: 'TEAM', maxUsers: 2, subscriptionStartedAt: '2026-01-01T00:00:00.000Z', endsAt: '2027-01-01T00:00:00.000Z' }, 403);
   await expectRejected(support.idToken, 'activate', { plan: 'TEAM', maxUsers: 2, subscriptionStartedAt: '2026-01-01T00:00:00.000Z', endsAt: '2027-01-01T00:00:00.000Z' }, 403);
   await expectRejected(inactive.idToken, 'activate', { plan: 'TEAM', maxUsers: 2, subscriptionStartedAt: '2026-01-01T00:00:00.000Z', endsAt: '2027-01-01T00:00:00.000Z' }, 403);
+  await expectRejected('', 'convert-to-paid', { plan: 'TEAM', maxUsers: 2, subscriptionStartedAt: start, subscriptionEndsAt: end }, 401);
+  await expectRejected(tenant.idToken, 'convert-to-paid', { plan: 'TEAM', maxUsers: 2, subscriptionStartedAt: start, subscriptionEndsAt: end }, 403);
+  await expectRejected(support.idToken, 'convert-to-paid', { plan: 'TEAM', maxUsers: 2, subscriptionStartedAt: start, subscriptionEndsAt: end }, 403);
 
-  await expectSuccess(superAdmin.idToken, 'activate', { plan: 'TEAM', maxUsers: 2, subscriptionStartedAt: start, endsAt: end }, 200, 'ORGANIZATION_LICENSE_ACTIVATED');
+  const converted = await expectSuccess(superAdmin.idToken, 'convert-to-paid', { plan: 'TEAM', maxUsers: 3, subscriptionStartedAt: start, subscriptionEndsAt: end }, 200, 'ORGANIZATION_TRIAL_CONVERTED_TO_PAID');
+  assert.equal(converted.body.data.license.plan, 'TEAM');
+  assert.equal(converted.body.data.license.status, 'ACTIVE');
+  assert.equal(converted.body.data.license.trialEndsAt, null);
+  assert.ok(converted.body.data.license.subscriptionEndsAt);
+  const extended = await expectSuccess(superAdmin.idToken, 'extend-subscription', { subscriptionEndsAt: extendedEnd }, 200, 'ORGANIZATION_SUBSCRIPTION_EXTENDED');
+  assert.equal(extended.body.data.license.plan, 'TEAM');
+  assert.equal(extended.body.data.license.maxUsers, 3);
+  assert.equal(extended.body.data.license.subscriptionStartedAt, converted.body.data.license.subscriptionStartedAt);
+  await expectRejected('', 'extend-subscription', { subscriptionEndsAt: isoDaysFromNow(600) }, 401);
+  await expectRejected(tenant.idToken, 'extend-subscription', { subscriptionEndsAt: isoDaysFromNow(600) }, 403);
+  await expectRejected(support.idToken, 'extend-subscription', { subscriptionEndsAt: isoDaysFromNow(600) }, 403);
+  await expectRejected(superAdmin.idToken, 'extend-subscription', { subscriptionEndsAt: end }, 400);
+  await expectRejected(superAdmin.idToken, 'extend-subscription', { subscriptionEndsAt: extendedEnd }, 400);
   await expectRejected(superAdmin.idToken, 'activate', { plan: 'TEAM', maxUsers: 2, subscriptionStartedAt: start, endsAt: end }, 409);
   await expectSuccess(superAdmin.idToken, 'change-plan', { plan: 'STARTER' }, 200, 'ORGANIZATION_PLAN_CHANGED');
   await expectSuccess(superAdmin.idToken, 'change-plan', { plan: 'LEGACY' }, 200, 'ORGANIZATION_PLAN_CHANGED');
@@ -164,11 +185,11 @@ test('Phase 2 licensing routes authorize real emulator callers and preserve atom
   await expectSuccess(superAdmin.idToken, 'suspend', { reason: 'integration test suspension' }, 200, 'ORGANIZATION_LICENSE_SUSPENDED');
   await expectSuccess(superAdmin.idToken, 'reactivate', {}, 200, 'ORGANIZATION_LICENSE_REACTIVATED');
   await expectSuccess(superAdmin.idToken, 'expire', {}, 200, 'ORGANIZATION_LICENSE_EXPIRED');
-  await expectSuccess(superAdmin.idToken, 'reactivate', {}, 200, 'ORGANIZATION_LICENSE_REACTIVATED');
   await licenseRef.set({ status: 'EXPIRED', subscriptionEndsAt: new Date(Date.now() - 60_000) }, { merge: true });
   await organizationRef.set({ licenseStatus: 'EXPIRED', licenseWriteEnabled: false, licenseExpiresAt: null }, { merge: true });
   await expectRejected(superAdmin.idToken, 'reactivate', {}, 409);
-  await expectSuccess(superAdmin.idToken, 'activate', { plan: 'TEAM', maxUsers: 2, subscriptionStartedAt: start, endsAt: end }, 200, 'ORGANIZATION_LICENSE_ACTIVATED');
+  await expectRejected(superAdmin.idToken, 'activate', { plan: 'TEAM', maxUsers: 2, subscriptionStartedAt: start, endsAt: end }, 409);
+  await expectSuccess(superAdmin.idToken, 'renew', { plan: 'TEAM', maxUsers: 3, subscriptionStartedAt: start, subscriptionEndsAt: end }, 200, 'ORGANIZATION_LICENSE_RENEWED');
 
   await expectSuccess(superAdmin.idToken, 'change-seat-limit', { maxUsers: 4 }, 200, 'MAX_USERS_CHANGED');
   await expectSuccess(superAdmin.idToken, 'change-seat-limit', { maxUsers: 2 }, 200, 'MAX_USERS_CHANGED');

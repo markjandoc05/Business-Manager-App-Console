@@ -1,6 +1,8 @@
 import type { DocumentSnapshot } from 'firebase-admin/firestore';
 import { adminDb } from './firebase-admin-core';
-import { buildOrganizationLicenseMirror, parseCanonicalLicense, resolveCanonicalLicense } from '../license-contract';
+import { parseCanonicalLicense, resolveCanonicalLicense } from '../license-contract';
+import { deriveLicenseAdminState } from './license-admin-state';
+import type { OrganizationMemberStatus } from '../types';
 
 function safeDate(value: unknown): string | undefined {
   if (typeof value === 'string') return value;
@@ -14,6 +16,17 @@ function safeAuditValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(safeAuditValue);
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, safeAuditValue(item)]));
   return undefined;
+}
+
+function memberStatus(value: unknown): OrganizationMemberStatus {
+  switch (typeof value === 'string' ? value.toLowerCase() : '') {
+    case 'pending': return 'PENDING';
+    case 'inactive': return 'INACTIVE';
+    case 'suspended': return 'SUSPENDED';
+    case 'archived': return 'ARCHIVED';
+    case 'disabled': return 'DISABLED';
+    default: return 'ACTIVE';
+  }
 }
 
 function licenseView(raw: Record<string, unknown> | undefined, now = Date.now()) {
@@ -39,9 +52,10 @@ function licenseView(raw: Record<string, unknown> | undefined, now = Date.now())
 async function organizationView(snapshot: DocumentSnapshot, now = Date.now()) {
   const data = snapshot.data() || {};
   const licenseSnapshot = await snapshot.ref.collection('license').doc('current').get();
-  const license = licenseView(licenseSnapshot.exists ? licenseSnapshot.data() : undefined, now);
+  const rawLicense = licenseSnapshot.exists ? licenseSnapshot.data() : undefined;
+  const license = licenseView(rawLicense, now);
   const activeMemberCount = await snapshot.ref.collection('members').where('status', '==', 'active').count().get();
-  const effectiveStatus = license?.status || 'UNKNOWN';
+  const licenseAdminState = deriveLicenseAdminState(rawLicense, activeMemberCount.data().count, now);
   return {
     id: snapshot.id,
     name: typeof data.name === 'string' ? data.name : 'Unnamed organization',
@@ -49,14 +63,16 @@ async function organizationView(snapshot: DocumentSnapshot, now = Date.now()) {
     businessType: typeof data.businessType === 'string' ? data.businessType : undefined,
     ownerEmail: typeof data.ownerEmail === 'string' ? data.ownerEmail : undefined,
     status: data.status,
-    licenseStatus: effectiveStatus,
+    licenseStatus: licenseAdminState.status,
     licenseWriteEnabled: typeof data.licenseWriteEnabled === 'boolean' ? data.licenseWriteEnabled : undefined,
     licenseExpiresAt: safeDate(data.licenseExpiresAt),
-    maxUsers: license?.maxUsers,
+    maxUsers: licenseAdminState.maxUsers ?? undefined,
     createdAt: safeDate(data.createdAt),
     updatedAt: safeDate(data.updatedAt),
     license,
-    activeMemberCount: activeMemberCount.data().count,
+    licenseDocumentState: licenseAdminState.documentState,
+    licenseAdminState,
+    activeMemberCount: licenseAdminState.activeMembers,
   };
 }
 
@@ -78,7 +94,7 @@ export async function getConsoleOrganization(orgId: string) {
       name: typeof data.name === 'string' ? data.name : undefined,
       email: typeof data.email === 'string' ? data.email : undefined,
       role: data.role === 'ADMIN' || data.role === 'MANAGER' ? data.role : 'USER',
-      status: data.status === 'PENDING' || data.status === 'DISABLED' ? data.status : 'ACTIVE',
+      status: memberStatus(data.status),
       joinedAt: safeDate(data.joinedAt || data.createdAt),
       lastLogin: safeDate(data.lastLogin),
     };
@@ -101,7 +117,7 @@ export async function listConsoleMemberships() {
         organization: view.name,
         organizationId: view.id,
         role: data.role === 'ADMIN' || data.role === 'MANAGER' ? data.role : 'USER',
-        status: data.status === 'PENDING' || data.status === 'DISABLED' ? data.status : 'ACTIVE',
+        status: memberStatus(data.status),
         licenseStatus: view.licenseStatus,
         joinedAt: safeDate(data.joinedAt || data.createdAt),
       };

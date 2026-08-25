@@ -30,6 +30,8 @@ export type LicenseMutationResult = { organizationId: string; license: Record<st
 export const activateLicense = (orgId: string, body: { plan: string; maxUsers: number; subscriptionStartedAt?: string; endsAt: string }) => callConsoleAdminApi<LicenseMutationResult>(`/api/organizations/${orgId}/license/activate`, body);
 export const renewLicense = (orgId: string, body: { plan?: string; maxUsers?: number; subscriptionStartedAt: string; subscriptionEndsAt: string }) => callConsoleAdminApi<LicenseMutationResult>(`/api/organizations/${orgId}/license/renew`, body);
 export const extendTrial = (orgId: string, trialEndsAt: string) => callConsoleAdminApi<LicenseMutationResult>(`/api/organizations/${orgId}/license/extend-trial`, { trialEndsAt });
+export const convertTrialToPaid = (orgId: string, body: { plan: 'STARTER' | 'TEAM' | 'LEGACY'; maxUsers: number; subscriptionStartedAt: string; subscriptionEndsAt: string }) => callConsoleAdminApi<LicenseMutationResult>(`/api/organizations/${orgId}/license/convert-to-paid`, body);
+export const extendSubscription = (orgId: string, subscriptionEndsAt: string) => callConsoleAdminApi<LicenseMutationResult>(`/api/organizations/${orgId}/license/extend-subscription`, { subscriptionEndsAt });
 export const changePlan = (orgId: string, plan: string) => callConsoleAdminApi<LicenseMutationResult>(`/api/organizations/${orgId}/license/plan`, { plan }, 'PATCH');
 export const changeSeatLimit = (orgId: string, maxUsers: number) => callConsoleAdminApi<LicenseMutationResult>(`/api/organizations/${orgId}/license/seat-limit`, { maxUsers }, 'PATCH');
 export const suspendOrganization = (orgId: string, reason?: string) => callConsoleAdminApi<LicenseMutationResult>(`/api/organizations/${orgId}/license/suspend`, { reason });

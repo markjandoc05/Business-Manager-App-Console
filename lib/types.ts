@@ -20,6 +20,19 @@ export interface PlatformAdmin {
 }
 
 export type OrganizationLicenseStatus = 'TRIAL' | 'ACTIVE' | 'EXPIRED' | 'SUSPENDED';
+export type LicenseDocumentState = 'NO_LICENSE' | 'INVALID_LICENSE' | 'VALID_LICENSE';
+export type LicenseAdminStatus = OrganizationLicenseStatus | 'UNKNOWN';
+export type LicenseAdminAction =
+  | 'ACTIVATE'
+  | 'EXTEND_TRIAL'
+  | 'CONVERT_TO_PAID'
+  | 'EXTEND_SUBSCRIPTION'
+  | 'RENEW'
+  | 'CHANGE_PLAN'
+  | 'CHANGE_SEAT_LIMIT'
+  | 'SUSPEND'
+  | 'EXPIRE'
+  | 'REACTIVATE';
 
 export type OrganizationPlan = 'TRIAL' | 'STARTER' | 'TEAM' | 'LEGACY';
 
@@ -55,10 +68,13 @@ export interface Organization {
   createdAt?: string;
   updatedAt?: string;
   license?: OrganizationLicense;
+  licenseDocumentState?: LicenseDocumentState;
+  licenseAdminState?: LicenseAdminState;
+  activeMemberCount?: number;
 }
 
 export type OrganizationMemberRole = 'ADMIN' | 'MANAGER' | 'USER';
-export type OrganizationMemberStatus = 'ACTIVE' | 'PENDING' | 'DISABLED';
+export type OrganizationMemberStatus = 'ACTIVE' | 'PENDING' | 'INACTIVE' | 'SUSPENDED' | 'ARCHIVED' | 'DISABLED';
 
 export interface OrganizationMember {
   id: string;
@@ -69,6 +85,17 @@ export interface OrganizationMember {
   status: OrganizationMemberStatus;
   joinedAt?: string;
   lastLogin?: string;
+}
+
+export interface LicenseAdminState {
+  documentState: LicenseDocumentState;
+  status: LicenseAdminStatus;
+  plan: OrganizationPlan | null;
+  activeMembers: number;
+  maxUsers: number | null;
+  daysRemaining: number | null;
+  expiresAt: string | null;
+  allowedActions: LicenseAdminAction[];
 }
 
 export interface DeveloperUser {

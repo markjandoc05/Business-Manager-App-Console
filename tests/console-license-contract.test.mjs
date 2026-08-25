@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { test } from 'node:test';
 import { buildOrganizationLicenseMirror, canonicalLicensePath, compareOrganizationLicenseMirror, enforcementMirrors, parseCanonicalLicense, resolveCanonicalLicense } from '../lib/license-contract.ts';
+import { deriveLicenseAdminState } from '../lib/server/license-admin-state.ts';
 import { loadLicenseMirrorState } from '../lib/license-mirror.ts';
 
 const future = new Date(Date.now() + 86_400_000).toISOString();
@@ -25,6 +26,23 @@ test('malformed or missing canonical licenses are safe and non-writable', () => 
   assert.equal(parseCanonicalLicense({ status: 'SUSPENDED', plan: 'TEAM', maxUsers: 3, features: { crm: 'yes' } }), null);
   assert.equal(resolveCanonicalLicense(null).canWrite, false);
   assert.equal(resolveCanonicalLicense(null).status, 'UNKNOWN');
+});
+
+test('the server action resolver distinguishes document state and lifecycle actions', () => {
+  const now = Date.now();
+  const trial = { ...license('TRIAL', new Date(now + 10 * 86_400_000).toISOString()) };
+  const active = { ...license('ACTIVE', new Date(now + 30 * 86_400_000).toISOString()) };
+  const expired = { ...license('ACTIVE', new Date(now - 86_400_000).toISOString()) };
+  const suspended = { ...active, status: 'SUSPENDED' };
+
+  assert.deepEqual(deriveLicenseAdminState(undefined, 0, now), {
+    documentState: 'NO_LICENSE', status: 'UNKNOWN', plan: null, activeMembers: 0, maxUsers: null, daysRemaining: null, expiresAt: null, allowedActions: ['ACTIVATE'],
+  });
+  assert.equal(deriveLicenseAdminState({ plan: 'TEAM', status: 'ACTIVE' }, 0, now).documentState, 'INVALID_LICENSE');
+  assert.deepEqual(deriveLicenseAdminState(trial, 2, now).allowedActions, ['EXTEND_TRIAL', 'CONVERT_TO_PAID', 'CHANGE_SEAT_LIMIT', 'SUSPEND', 'EXPIRE']);
+  assert.deepEqual(deriveLicenseAdminState(active, 2, now).allowedActions, ['EXTEND_SUBSCRIPTION', 'RENEW', 'CHANGE_PLAN', 'CHANGE_SEAT_LIMIT', 'SUSPEND', 'EXPIRE']);
+  assert.deepEqual(deriveLicenseAdminState(expired, 2, now).allowedActions, ['RENEW']);
+  assert.deepEqual(deriveLicenseAdminState(suspended, 2, now).allowedActions, ['REACTIVATE', 'RENEW', 'CHANGE_SEAT_LIMIT']);
 });
 
 test('ACTIVE, SUSPENDED, and EXPIRED produce the Client App enforcement semantics', () => {
@@ -75,11 +93,11 @@ test('license mutation writes canonical document and organization mirrors in one
 test('Phase 2 exposes renewal, status-changing operations, and validation guards', () => {
   const service = fs.readFileSync(new URL('../lib/server/license-service.ts', import.meta.url), 'utf8');
   const handler = fs.readFileSync(new URL('../lib/server/license-handler.ts', import.meta.url), 'utf8');
-  assert.match(service, /type Action = 'activate' \| 'renew'/);
+  assert.match(service, /LicenseMutationAction = .*convert-to-paid.*extend-subscription/);
   assert.match(service, /subscriptionStartedAt/);
   assert.match(service, /subscriptionEndsAt/);
   assert.match(service, /maxUsers cannot be less than the active member count/);
-  assert.match(service, /Only a suspended or expired license can be reactivated/);
+  assert.match(service, /Only a suspended license can be reactivated/);
   assert.match(service, /Only a trial or active license can be suspended/);
   assert.match(service, /Only a trial or active license can be expired/);
   assert.match(handler, /requirePlatformAdminToken\(idToken, \['SUPER_ADMIN'\]\)/);
@@ -121,10 +139,24 @@ test('all license mutations use the centralized mirror helper', () => {
 
 test('the organization detail action matrix does not offer activation for ACTIVE licenses', () => {
   const detail = fs.readFileSync(new URL('../components/console/OrganizationDetailModule.tsx', import.meta.url), 'utf8');
-  assert.match(detail, /evaluation\.status === 'ACTIVE'/);
-  assert.match(detail, /\['RENEW', 'CHANGE_PLAN', 'CHANGE_SEAT_LIMIT', 'SUSPEND', 'EXPIRE'\]/);
-  assert.match(detail, /evaluation\.status === 'TRIAL'/);
-  assert.match(detail, /\['ACTIVATE', 'EXTEND_TRIAL', 'CHANGE_SEAT_LIMIT', 'SUSPEND', 'EXPIRE'\]/);
+  assert.match(detail, /licenseAdminState/);
+  assert.match(detail, /allowedActions/);
+  assert.doesNotMatch(detail, /evaluation\.status ===/);
+  assert.doesNotMatch(detail, /\['ACTIVATE', 'EXTEND_TRIAL', 'CHANGE_SEAT_LIMIT', 'SUSPEND', 'EXPIRE'\]/);
+});
+
+test('read, route, and dialog contracts expose the licensing lifecycle foundation', () => {
+  const readService = fs.readFileSync(new URL('../lib/server/console-read-service.ts', import.meta.url), 'utf8');
+  const client = fs.readFileSync(new URL('../lib/console-api.ts', import.meta.url), 'utf8');
+  const dialog = fs.readFileSync(new URL('../components/console/LicenseActionDialog.tsx', import.meta.url), 'utf8');
+  assert.match(readService, /licenseDocumentState/);
+  assert.match(readService, /licenseAdminState/);
+  assert.match(readService, /activeMemberCount/);
+  assert.match(client, /convertTrialToPaid/);
+  assert.match(client, /extendSubscription/);
+  assert.match(dialog, /Convert to Paid/);
+  assert.match(dialog, /Extend Subscription/);
+  assert.match(dialog, /Current expiration/);
 });
 
 test('409 API errors preserve safe domain messages for the Console client', () => {
@@ -139,7 +171,7 @@ test('the Console keeps tenant roles and unauthenticated callers outside platfor
   const detail = fs.readFileSync(new URL('../components/console/OrganizationDetailModule.tsx', import.meta.url), 'utf8');
   assert.match(auth, /A Firebase ID token is required/);
   assert.match(auth, /platform administrator is not authorized/);
-  assert.match(detail, /platformAdmin\?\.role !== 'SUPER_ADMIN'/);
+  assert.match(detail, /platformAdmin\?\.role === 'SUPER_ADMIN'/);
   assert.match(detail, /SUSPEND/);
   assert.match(detail, /EXPIRE/);
 });

@@ -1,27 +1,48 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Organization } from '@/lib/types';
+import { Organization, LicenseAdminAction, OrganizationPlan } from '@/lib/types';
 
-export type LicenseAction = 'ACTIVATE' | 'RENEW' | 'EXTEND_TRIAL' | 'CHANGE_PLAN' | 'CHANGE_SEAT_LIMIT' | 'SUSPEND' | 'EXPIRE' | 'REACTIVATE';
-export type LicenseActionPayload = { plan?: string; maxUsers?: number; startDate?: string; date?: string; reason?: string };
+export type LicenseAction = LicenseAdminAction;
+export type LicenseActionPayload = { plan?: OrganizationPlan; maxUsers?: number; subscriptionStartedAt?: string; subscriptionEndsAt?: string; trialEndsAt?: string; reason?: string };
+
+const labels: Record<LicenseAction, string> = { ACTIVATE: 'Activate Organization', EXTEND_TRIAL: 'Extend Trial', CONVERT_TO_PAID: 'Convert to Paid', EXTEND_SUBSCRIPTION: 'Extend Subscription', RENEW: 'Renew Subscription', CHANGE_PLAN: 'Change Plan', CHANGE_SEAT_LIMIT: 'Change User Limit', SUSPEND: 'Suspend Organization', EXPIRE: 'Mark Expired', REACTIVATE: 'Reactivate Organization' };
+const paidPlans: OrganizationPlan[] = ['STARTER', 'TEAM', 'LEGACY'];
+function dateOnly(value?: string) { return value ? value.slice(0, 10) : ''; }
+export function licenseActionLabel(action: LicenseAction) { return labels[action]; }
 
 export function LicenseActionDialog({ action, organization, activeMembers, busy, onClose, onSubmit }: { action: LicenseAction; organization: Organization; activeMembers: number; busy: boolean; onClose: () => void; onSubmit: (payload: LicenseActionPayload) => void }) {
-  const [plan, setPlan] = useState<string>(organization.license?.plan || 'STARTER');
+  const [plan, setPlan] = useState<OrganizationPlan>(action === 'CONVERT_TO_PAID' || action === 'RENEW' || action === 'CHANGE_PLAN' ? 'TEAM' : organization.license?.plan || 'TRIAL');
   const [maxUsers, setMaxUsers] = useState(String(organization.license?.maxUsers || Math.max(activeMembers, 1)));
-  const [startDate, setStartDate] = useState(organization.license?.subscriptionStartedAt?.slice(0, 10) || new Date().toISOString().slice(0, 10));
-  const [date, setDate] = useState(organization.license?.subscriptionEndsAt?.slice(0, 10) || organization.license?.trialEndsAt?.slice(0, 10) || '');
+  const [startDate, setStartDate] = useState(dateOnly(organization.license?.subscriptionStartedAt) || new Date().toISOString().slice(0, 10));
+  const [endDate, setEndDate] = useState(dateOnly(organization.license?.subscriptionEndsAt) || dateOnly(organization.license?.trialEndsAt));
   const [reason, setReason] = useState('');
   const [validation, setValidation] = useState('');
-  const title = action.replace('_', ' ').toLowerCase().replace(/^./, (letter) => letter.toUpperCase());
+  const title = labels[action];
+  const hasSeatInput = ['ACTIVATE', 'CONVERT_TO_PAID', 'RENEW', 'CHANGE_SEAT_LIMIT'].includes(action);
+  const hasPlanInput = ['ACTIVATE', 'CONVERT_TO_PAID', 'RENEW', 'CHANGE_PLAN'].includes(action);
+  const hasStartInput = ['CONVERT_TO_PAID', 'RENEW'].includes(action) || (action === 'ACTIVATE' && plan !== 'TRIAL');
+  const hasEndInput = ['ACTIVATE', 'CONVERT_TO_PAID', 'RENEW', 'EXTEND_TRIAL', 'EXTEND_SUBSCRIPTION'].includes(action);
   const submit = () => {
-    if ((action === 'ACTIVATE' || action === 'RENEW' || action === 'EXTEND_TRIAL') && !date) return setValidation('A valid end date is required.');
-    if ((action === 'RENEW' || (action === 'ACTIVATE' && plan !== 'TRIAL')) && !startDate) return setValidation('A valid subscription start date is required.');
-    if (action === 'RENEW' && startDate >= date) return setValidation('The subscription end date must be after the start date.');
-    if ((action === 'ACTIVATE' || action === 'RENEW' || action === 'CHANGE_SEAT_LIMIT') && (!Number.isInteger(Number(maxUsers)) || Number(maxUsers) <= 0 || Number(maxUsers) < activeMembers)) return setValidation(`Maximum users must be at least the ${activeMembers} active members.`);
-    if ((action === 'ACTIVATE' || action === 'CHANGE_PLAN') && !['TRIAL', 'STARTER', 'TEAM', 'LEGACY'].includes(plan)) return setValidation('Select a supported plan.');
-    if (action === 'RENEW' && !['STARTER', 'TEAM', 'LEGACY'].includes(plan)) return setValidation('Renewal requires STARTER, TEAM, or LEGACY.');
-    onSubmit({ plan, maxUsers: Number(maxUsers), startDate, date, reason });
+    setValidation('');
+    if (hasEndInput && !endDate) return setValidation('A valid end date is required.');
+    if (hasStartInput && !startDate) return setValidation('A valid subscription start date is required.');
+    if (hasStartInput && startDate >= endDate) return setValidation('The subscription end date must be after the start date.');
+    if (action === 'EXTEND_SUBSCRIPTION' && organization.license?.subscriptionEndsAt && endDate <= dateOnly(organization.license.subscriptionEndsAt)) return setValidation('The new expiration must be later than the current expiration.');
+    if (action === 'EXTEND_TRIAL' && organization.license?.trialEndsAt && endDate <= dateOnly(organization.license.trialEndsAt)) return setValidation('The new trial end must be later than the current trial end.');
+    if (hasSeatInput && (!Number.isInteger(Number(maxUsers)) || Number(maxUsers) <= 0 || Number(maxUsers) < activeMembers)) return setValidation(`Maximum users must be at least the ${activeMembers} active members.`);
+    if (hasPlanInput && !['TRIAL', ...paidPlans].includes(plan)) return setValidation('Select a supported plan.');
+    if ((action === 'CONVERT_TO_PAID' || action === 'RENEW' || action === 'CHANGE_PLAN') && !paidPlans.includes(plan)) return setValidation('Select a paid plan.');
+    onSubmit({ plan, maxUsers: Number(maxUsers), subscriptionStartedAt: startDate, subscriptionEndsAt: endDate, trialEndsAt: endDate, reason });
   };
-  return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true"><div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl"><h2 className="text-xl font-black text-gray-950">{title}</h2><p className="mt-1 text-sm text-gray-500">The server remains authoritative and will record this action in the audit log.</p>{(action === 'ACTIVATE' || action === 'RENEW' || action === 'CHANGE_PLAN') && <label className="mt-5 block text-sm font-bold">Plan<select value={plan} onChange={(e) => setPlan(e.target.value)} className="mt-2 w-full rounded-lg border border-gray-200 px-3 py-2 font-normal"><option value="TRIAL">TRIAL</option><option value="STARTER">STARTER</option><option value="TEAM">TEAM</option><option value="LEGACY">LEGACY</option></select></label>}{(action === 'ACTIVATE' || action === 'RENEW' || action === 'CHANGE_SEAT_LIMIT') && <label className="mt-4 block text-sm font-bold">Maximum users <span className="font-normal text-gray-500">({activeMembers} active members)</span><input type="number" min={activeMembers} value={maxUsers} onChange={(e) => setMaxUsers(e.target.value)} className="mt-2 w-full rounded-lg border border-gray-200 px-3 py-2 font-normal" /></label>}{(action === 'ACTIVATE' && plan !== 'TRIAL' || action === 'RENEW') && <label className="mt-4 block text-sm font-bold">Subscription start date<input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="mt-2 w-full rounded-lg border border-gray-200 px-3 py-2 font-normal" /></label>}{(action === 'ACTIVATE' || action === 'RENEW' || action === 'EXTEND_TRIAL') && <label className="mt-4 block text-sm font-bold">{action === 'EXTEND_TRIAL' ? 'New trial end date' : 'Subscription end date'}<input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="mt-2 w-full rounded-lg border border-gray-200 px-3 py-2 font-normal" /></label>}{action === 'SUSPEND' && <><p className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">Suspending disables tenant writes without deleting business data.</p><label className="mt-4 block text-sm font-bold">Reason (optional)<textarea value={reason} onChange={(e) => setReason(e.target.value)} className="mt-2 w-full rounded-lg border border-gray-200 px-3 py-2 font-normal" /></label></>}{(action === 'EXPIRE' || action === 'REACTIVATE') && <p className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{action === 'EXPIRE' ? 'This marks the canonical license expired and disables tenant writes.' : 'The server restores only a currently valid trial or subscription.'}</p>}{validation && <p className="mt-4 text-sm font-semibold text-rose-600">{validation}</p>}<div className="mt-6 flex justify-end gap-3"><button onClick={onClose} disabled={busy} className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-bold text-gray-700">Cancel</button><button onClick={submit} disabled={busy} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">{busy ? 'Saving…' : `Confirm ${title}`}</button></div></div></div>;
+  return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true"><div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl"><h2 className="text-xl font-black text-gray-950">{title}</h2><p className="mt-1 text-sm text-gray-500">The server remains authoritative and will record this action in the audit log.</p>
+    {hasPlanInput && <label className="mt-5 block text-sm font-bold">Plan<select value={plan} onChange={(e) => setPlan(e.target.value as OrganizationPlan)} className="mt-2 w-full rounded-lg border border-gray-200 px-3 py-2 font-normal">{(action === 'ACTIVATE' ? ['TRIAL', ...paidPlans] : paidPlans).map((item) => <option key={item} value={item}>{item}</option>)}</select></label>}
+    {hasSeatInput && <label className="mt-4 block text-sm font-bold">Maximum users <span className="font-normal text-gray-500">({activeMembers} active members)</span><input type="number" min={activeMembers} value={maxUsers} onChange={(e) => setMaxUsers(e.target.value)} className="mt-2 w-full rounded-lg border border-gray-200 px-3 py-2 font-normal" /></label>}
+    {hasStartInput && <label className="mt-4 block text-sm font-bold">Subscription start date<input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="mt-2 w-full rounded-lg border border-gray-200 px-3 py-2 font-normal" /></label>}
+    {action === 'EXTEND_SUBSCRIPTION' && <p className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm text-gray-600">Current expiration: <strong>{dateOnly(organization.license?.subscriptionEndsAt) || '—'}</strong></p>}
+    {action === 'EXTEND_TRIAL' && <p className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm text-gray-600">Current trial end: <strong>{dateOnly(organization.license?.trialEndsAt) || '—'}</strong></p>}
+    {hasEndInput && <label className="mt-4 block text-sm font-bold">{action === 'EXTEND_TRIAL' ? 'New trial end date' : action === 'EXTEND_SUBSCRIPTION' ? 'New expiration date' : action === 'ACTIVATE' && plan === 'TRIAL' ? 'Trial end date' : 'Subscription end date'}<input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="mt-2 w-full rounded-lg border border-gray-200 px-3 py-2 font-normal" /></label>}
+    {action === 'SUSPEND' && <><p className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">Suspending disables tenant writes without deleting business data.</p><label className="mt-4 block text-sm font-bold">Reason (optional)<textarea value={reason} onChange={(e) => setReason(e.target.value)} className="mt-2 w-full rounded-lg border border-gray-200 px-3 py-2 font-normal" /></label></>}
+    {(action === 'EXPIRE' || action === 'REACTIVATE') && <p className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{action === 'EXPIRE' ? 'This marks the canonical license expired and disables tenant writes.' : 'The server restores only a currently valid trial or subscription.'}</p>}
+    {validation && <p className="mt-4 text-sm font-semibold text-rose-600">{validation}</p>}<div className="mt-6 flex justify-end gap-3"><button onClick={onClose} disabled={busy} className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-bold text-gray-700">Cancel</button><button onClick={submit} disabled={busy} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">{busy ? 'Saving…' : `Confirm ${title}`}</button></div></div></div>;
 }
