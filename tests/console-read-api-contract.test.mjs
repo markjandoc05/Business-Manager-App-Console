@@ -8,6 +8,7 @@ const routes = [
   '../app/api/users/route.ts',
   '../app/api/licensing/route.ts',
   '../app/api/audit-logs/route.ts',
+  '../app/api/organizations/[orgId]/usage/route.ts',
 ];
 
 test('platform read APIs require the shared platform-admin authorization layer', async () => {

@@ -24,6 +24,8 @@ export type LicenseDocumentState = 'NO_LICENSE' | 'INVALID_LICENSE' | 'VALID_LIC
 export type LicenseAdminStatus = OrganizationLicenseStatus | 'UNKNOWN';
 export type LicenseAdminAction =
   | 'ACTIVATE'
+  | 'REPAIR_LICENSE'
+  | 'EDIT_LICENSE_DETAILS'
   | 'EXTEND_TRIAL'
   | 'CONVERT_TO_PAID'
   | 'EXTEND_SUBSCRIPTION'
@@ -34,7 +36,44 @@ export type LicenseAdminAction =
   | 'EXPIRE'
   | 'REACTIVATE';
 
+export interface LicenseActionPayload {
+  plan?: OrganizationPlan;
+  maxUsers?: number;
+  trialStartedAt?: string;
+  subscriptionStartedAt?: string;
+  subscriptionEndsAt?: string;
+  trialEndsAt?: string;
+  reason?: string;
+}
+
 export type OrganizationPlan = 'TRIAL' | 'STARTER' | 'TEAM' | 'LEGACY';
+
+export type OrganizationUsageStatus = 'NO_LIMIT' | 'NORMAL' | 'WARNING' | 'HIGH' | 'FULL';
+
+export interface OrganizationUsageBreakdown {
+  leads: number;
+  clients: number;
+  deals: number;
+  tasks: number;
+  activities: number;
+  members: number;
+  files: number;
+}
+
+export interface OrganizationUsage {
+  usageAvailable: boolean;
+  storageBytes: number;
+  firestoreBytesEstimated: number;
+  totalBytesEstimated: number;
+  fileCount: number;
+  recordCount: number;
+  breakdown: OrganizationUsageBreakdown;
+  storageLimitBytes: number | null;
+  usagePercent: number | null;
+  usageStatus: OrganizationUsageStatus;
+  lastCalculatedAt?: string;
+  lastReconciledAt?: string;
+}
 
 export interface OrganizationLicense {
   plan?: OrganizationPlan;
@@ -64,17 +103,126 @@ export interface Organization {
   licenseExpiresAt?: string;
   currency?: string;
   timezone?: string;
+  localeSettings?: {
+    timezone: string | null;
+    currency: string | null;
+    timezoneSource: string;
+    currencySource: string;
+  };
   ownerEmail?: string;
   createdAt?: string;
   updatedAt?: string;
   license?: OrganizationLicense;
   licenseDocumentState?: LicenseDocumentState;
   licenseAdminState?: LicenseAdminState;
+  organizationAdminState?: OrganizationAdminState;
   activeMemberCount?: number;
 }
 
 export type OrganizationMemberRole = 'ADMIN' | 'MANAGER' | 'USER';
 export type OrganizationMemberStatus = 'ACTIVE' | 'PENDING' | 'INACTIVE' | 'SUSPENDED' | 'ARCHIVED' | 'DISABLED';
+
+export type OrganizationAttentionReason =
+  | 'NO_LICENSE'
+  | 'INVALID_LICENSE'
+  | 'LICENSE_EXPIRED'
+  | 'LICENSE_EXPIRING_SOON'
+  | 'TRIAL_EXPIRING_SOON'
+  | 'LICENSE_SUSPENDED'
+  | 'SEAT_LIMIT_EXCEEDED'
+  | 'MISSING_REQUIRED_ORGANIZATION_DATA'
+  | 'MISSING_TIMEZONE'
+  | 'MISSING_CURRENCY'
+  | 'STORAGE_USAGE_WARNING'
+  | 'STORAGE_USAGE_HIGH'
+  | 'STORAGE_LIMIT_REACHED';
+
+export interface OrganizationAdminState {
+  health: 'HEALTHY' | 'ACTION_REQUIRED' | 'WARNING';
+  attentionReasons: OrganizationAttentionReason[];
+}
+
+export interface DashboardAttentionItem {
+  organizationId: string;
+  organizationName: string;
+  reason: OrganizationAttentionReason;
+  reasonLabel: string;
+  priority: number;
+  status: LicenseAdminStatus;
+  plan: OrganizationPlan | null;
+  activeMemberCount: number;
+  maxUsers: number | null;
+  daysRemaining: number | null;
+  expiresAt: string | null;
+  allowedActions: LicenseAdminAction[];
+  primaryAction?: LicenseAdminAction;
+  usagePercent?: number | null;
+  usageStatus?: OrganizationUsageStatus;
+}
+
+export interface DashboardUpcomingLicenseAction {
+  organizationId: string;
+  organizationName: string;
+  plan: OrganizationPlan | null;
+  status: LicenseAdminStatus;
+  expiresAt: string | null;
+  daysRemaining: number | null;
+  action: LicenseAdminAction;
+  allowedActions: LicenseAdminAction[];
+}
+
+export interface DashboardSeatUtilizationItem {
+  organizationId: string;
+  organizationName: string;
+  activeMemberCount: number;
+  maxUsers: number | null;
+  availableSeats: number | null;
+  utilizationPercent: number | null;
+  state: 'NEAR_LIMIT' | 'FULL' | 'OVER_LIMIT' | 'UNLICENSED';
+}
+
+export interface DashboardActivityItem {
+  id: string;
+  action?: string;
+  title: string;
+  actorName: string;
+  actorEmail?: string;
+  organizationId?: string;
+  organizationName?: string;
+  detail?: string;
+  createdAt?: string;
+}
+
+export interface DashboardMetrics {
+  summary: {
+    organizationsTotal: number;
+    organizationsActive: number;
+    organizationsTrial: number;
+    organizationsAttention: number;
+    activeMembers: number;
+    licensesExpiringSoon: number;
+    licensesExpired: number;
+    licensesSuspended: number;
+  };
+  attentionSummary: {
+    invalidLicense: number;
+    noLicense: number;
+    expired: number;
+    seatLimitExceeded: number;
+    expiringSoon: number;
+    suspended: number;
+    missingSetup: number;
+    storageWarning: number;
+    storageHigh: number;
+    storageLimitReached: number;
+  };
+  attention: DashboardAttentionItem[];
+  licensingOverview: { active: number; trial: number; expired: number; suspended: number; invalid: number; noLicense: number };
+  planDistribution: Record<OrganizationPlan, number>;
+  upcomingLicenseActions: DashboardUpcomingLicenseAction[];
+  seatUtilization: DashboardSeatUtilizationItem[];
+  recentActivity: DashboardActivityItem[];
+}
 
 export interface OrganizationMember {
   id: string;

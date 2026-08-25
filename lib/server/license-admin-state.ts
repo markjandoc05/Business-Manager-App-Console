@@ -1,5 +1,5 @@
 import { parseCanonicalLicense, resolveCanonicalLicense } from '../license-contract.ts';
-import type { LicenseAdminAction, LicenseAdminState, LicenseDocumentState } from '../types';
+import type { LicenseAdminAction, LicenseAdminState, LicenseDocumentState, OrganizationAdminState, OrganizationAttentionReason } from '../types';
 
 const DAY_MS = 86_400_000;
 
@@ -39,7 +39,7 @@ export function deriveLicenseAdminState(
       maxUsers: null,
       daysRemaining: null,
       expiresAt: null,
-      allowedActions: documentState === 'NO_LICENSE' ? ['ACTIVATE'] : [],
+      allowedActions: documentState === 'NO_LICENSE' ? ['ACTIVATE'] : ['REPAIR_LICENSE'],
     };
   }
 
@@ -53,14 +53,16 @@ export function deriveLicenseAdminState(
   const actions: LicenseAdminAction[] = [];
 
   if (license.status === 'SUSPENDED') {
+    actions.push('EDIT_LICENSE_DETAILS');
     if (expirationMillis !== undefined && expirationMillis > now) actions.push('REACTIVATE');
     if (license.plan !== 'TRIAL') actions.push('RENEW');
     actions.push('CHANGE_SEAT_LIMIT');
   } else if (effective.status === 'TRIAL') {
-    actions.push('EXTEND_TRIAL', 'CONVERT_TO_PAID', 'CHANGE_SEAT_LIMIT', 'SUSPEND', 'EXPIRE');
+    actions.push('EDIT_LICENSE_DETAILS', 'EXTEND_TRIAL', 'CONVERT_TO_PAID', 'CHANGE_SEAT_LIMIT', 'SUSPEND', 'EXPIRE');
   } else if (effective.status === 'ACTIVE') {
-    actions.push('EXTEND_SUBSCRIPTION', 'RENEW', 'CHANGE_PLAN', 'CHANGE_SEAT_LIMIT', 'SUSPEND', 'EXPIRE');
+    actions.push('EDIT_LICENSE_DETAILS', 'EXTEND_SUBSCRIPTION', 'RENEW', 'CHANGE_PLAN', 'CHANGE_SEAT_LIMIT', 'SUSPEND', 'EXPIRE');
   } else if (effective.status === 'EXPIRED') {
+    actions.push('EDIT_LICENSE_DETAILS');
     if (license.plan === 'TRIAL') actions.push('EXTEND_TRIAL');
     else actions.push('RENEW');
   }
@@ -75,4 +77,23 @@ export function deriveLicenseAdminState(
     expiresAt: isoDate(expiration),
     allowedActions: actions,
   };
+}
+
+export function deriveOrganizationAdminState(
+  organizationData: Record<string, unknown>,
+  licenseState: LicenseAdminState,
+): OrganizationAdminState {
+  const reasons: OrganizationAttentionReason[] = [];
+  if (licenseState.documentState === 'NO_LICENSE') reasons.push('NO_LICENSE');
+  if (licenseState.documentState === 'INVALID_LICENSE') reasons.push('INVALID_LICENSE');
+  if (licenseState.status === 'EXPIRED') reasons.push('LICENSE_EXPIRED');
+  if (licenseState.status === 'SUSPENDED') reasons.push('LICENSE_SUSPENDED');
+  if (licenseState.status === 'ACTIVE' && licenseState.daysRemaining !== null && licenseState.daysRemaining >= 0 && licenseState.daysRemaining <= 30) reasons.push('LICENSE_EXPIRING_SOON');
+  if (licenseState.status === 'TRIAL' && licenseState.daysRemaining !== null && licenseState.daysRemaining >= 0 && licenseState.daysRemaining <= 30) reasons.push('TRIAL_EXPIRING_SOON');
+  if (licenseState.maxUsers !== null && licenseState.activeMembers > licenseState.maxUsers) reasons.push('SEAT_LIMIT_EXCEEDED');
+  if (typeof organizationData.name !== 'string' || !organizationData.name.trim()) reasons.push('MISSING_REQUIRED_ORGANIZATION_DATA');
+  if (typeof organizationData.timezone !== 'string' || !organizationData.timezone.trim()) reasons.push('MISSING_TIMEZONE');
+  if (typeof organizationData.currency !== 'string' || !organizationData.currency.trim()) reasons.push('MISSING_CURRENCY');
+  const hasActionRequiredReason = reasons.some((reason) => !['LICENSE_EXPIRING_SOON', 'TRIAL_EXPIRING_SOON', 'MISSING_TIMEZONE', 'MISSING_CURRENCY'].includes(reason));
+  return { health: hasActionRequiredReason ? 'ACTION_REQUIRED' : reasons.length ? 'WARNING' : 'HEALTHY', attentionReasons: reasons };
 }

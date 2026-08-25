@@ -1,19 +1,19 @@
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { adminDb } from './firebase-admin-core';
 import { ApiError } from './api-errors';
-import { enumValue, integer, isoDate, optionalString } from './request';
+import { enumValue, integer, isoDate, optionalString, requiredString } from './request';
 import { AuthenticatedPlatformAdmin } from './platform-admin';
 import { buildOrganizationLicenseMirror, parseCanonicalLicense, resolveCanonicalLicense } from '../license-contract';
 import { deriveLicenseAdminState } from './license-admin-state';
 
 const PLANS = ['TRIAL', 'STARTER', 'TEAM', 'LEGACY'] as const;
-export type LicenseMutationAction = 'activate' | 'renew' | 'extend-trial' | 'convert-to-paid' | 'extend-subscription' | 'change-plan' | 'change-seat-limit' | 'suspend' | 'expire' | 'reactivate';
+export type LicenseMutationAction = 'activate' | 'repair-license' | 'edit-details' | 'renew' | 'extend-trial' | 'convert-to-paid' | 'extend-subscription' | 'change-plan' | 'change-seat-limit' | 'suspend' | 'expire' | 'reactivate';
 type Action = LicenseMutationAction;
 type LicenseData = Record<string, any>;
 
 function auditAction(action: Action) {
   return ({
-    activate: 'ORGANIZATION_LICENSE_ACTIVATED', renew: 'ORGANIZATION_LICENSE_RENEWED', 'extend-trial': 'TRIAL_EXTENDED',
+    activate: 'ORGANIZATION_LICENSE_ACTIVATED', 'repair-license': 'ORGANIZATION_LICENSE_REPAIRED', 'edit-details': 'ORGANIZATION_LICENSE_ADMIN_CORRECTED', renew: 'ORGANIZATION_LICENSE_RENEWED', 'extend-trial': 'TRIAL_EXTENDED',
     'convert-to-paid': 'ORGANIZATION_TRIAL_CONVERTED_TO_PAID', 'extend-subscription': 'ORGANIZATION_SUBSCRIPTION_EXTENDED',
     'change-plan': 'ORGANIZATION_PLAN_CHANGED', 'change-seat-limit': 'MAX_USERS_CHANGED', suspend: 'ORGANIZATION_LICENSE_SUSPENDED',
     expire: 'ORGANIZATION_LICENSE_EXPIRED', reactivate: 'ORGANIZATION_LICENSE_REACTIVATED',
@@ -40,26 +40,73 @@ export async function mutateLicense(orgId: string, action: Action, body: Record<
     const activeMembersSnapshot = await transaction.get(organizationRef.collection('members').where('status', '==', 'active'));
     if (!organizationSnapshot.exists) throw new ApiError('NOT_FOUND', 'Organization not found.', 404);
     const current = licenseSnapshot.exists ? licenseSnapshot.data() || {} : null;
-    if (!current && action !== 'activate') throw new ApiError('CONFLICT', 'No canonical license exists for this organization.', 409);
+    if (!current && !['activate'].includes(action)) throw new ApiError('CONFLICT', 'No canonical license exists for this organization.', 409);
     const currentLicense = current ? parseCanonicalLicense(current) : null;
-    if (current && !currentLicense) throw new ApiError('CONFLICT', 'License requires attention.', 409);
+    if (current && !currentLicense && action !== 'repair-license') throw new ApiError('CONFLICT', 'License requires attention.', 409);
+    if (action === 'repair-license' && (!current || currentLicense)) throw new ApiError('CONFLICT', 'The license is no longer invalid and was not repaired.', 409);
     if (current && action === 'activate') {
       if (current.status === 'ACTIVE') throw new ApiError('CONFLICT', 'An active license must be renewed or changed rather than activated again.', 409);
       throw new ApiError('CONFLICT', 'An existing license must be renewed or changed rather than activated again.', 409);
     }
     const now = Timestamp.now();
-    const nextLicense: LicenseData = { ...(current || {}) };
+    let nextLicense: LicenseData = { ...(current || {}) };
     if (currentLicense) {
       const adminState = deriveLicenseAdminState(current as Record<string, unknown>, activeMembersSnapshot.size, now.toMillis());
       const actionNames: Record<Action, string> = {
-        activate: 'ACTIVATE', renew: 'RENEW', 'extend-trial': 'EXTEND_TRIAL', 'convert-to-paid': 'CONVERT_TO_PAID',
+        activate: 'ACTIVATE', 'repair-license': 'REPAIR_LICENSE', 'edit-details': 'EDIT_LICENSE_DETAILS', renew: 'RENEW', 'extend-trial': 'EXTEND_TRIAL', 'convert-to-paid': 'CONVERT_TO_PAID',
         'extend-subscription': 'EXTEND_SUBSCRIPTION', 'change-plan': 'CHANGE_PLAN', 'change-seat-limit': 'CHANGE_SEAT_LIMIT',
         suspend: 'SUSPEND', expire: 'EXPIRE', reactivate: 'REACTIVATE',
       };
       if (!adminState.allowedActions.includes(actionNames[action] as never)) throw new ApiError('CONFLICT', 'This licensing action is no longer allowed for the current organization state.', 409);
     }
 
-    if (action === 'activate') {
+    if (action === 'repair-license') {
+      const plan = enumValue(body.plan, 'plan', PLANS);
+      const maxUsers = integer(body.maxUsers, 'maxUsers', 1);
+      const reason = requiredString(body, 'reason');
+      if (maxUsers < activeMembersSnapshot.size) throw new ApiError('INVALID_REQUEST', 'maxUsers cannot be less than the active member count.', 400);
+      const startAt = isoDate(plan === 'TRIAL' ? body.trialStartedAt : body.subscriptionStartedAt, plan === 'TRIAL' ? 'trialStartedAt' : 'subscriptionStartedAt');
+      const endsAt = isoDate(plan === 'TRIAL' ? body.trialEndsAt : body.subscriptionEndsAt, plan === 'TRIAL' ? 'trialEndsAt' : 'subscriptionEndsAt');
+      if (endsAt <= startAt) throw new ApiError('INVALID_REQUEST', 'The license end date must be after the start date.', 400);
+      if (endsAt <= now.toDate()) throw new ApiError('INVALID_REQUEST', 'The license end date must be in the future.', 400);
+      nextLicense = {
+        plan, status: plan === 'TRIAL' ? 'TRIAL' : 'ACTIVE', maxUsers,
+        trialStartedAt: plan === 'TRIAL' ? Timestamp.fromDate(startAt) : null,
+        trialEndsAt: plan === 'TRIAL' ? Timestamp.fromDate(endsAt) : null,
+        subscriptionStartedAt: plan === 'TRIAL' ? null : Timestamp.fromDate(startAt),
+        subscriptionEndsAt: plan === 'TRIAL' ? null : Timestamp.fromDate(endsAt),
+        features: { crm: true, reports: true, documents: true }, createdAt: timestampValue(current?.createdAt) || now,
+      };
+    } else if (action === 'edit-details') {
+      const unsupported = Object.keys(body).filter((key) => !['plan', 'maxUsers', 'trialStartedAt', 'trialEndsAt', 'subscriptionStartedAt', 'subscriptionEndsAt', 'reason'].includes(key));
+      if (unsupported.length) throw new ApiError('INVALID_REQUEST', `Unsupported license correction field: ${unsupported[0]}.`, 400);
+      if (!currentLicense) throw new ApiError('CONFLICT', 'Only a valid canonical license can be corrected.', 409);
+      requiredString(body, 'reason');
+      const plan = body.plan === undefined ? currentLicense.plan : enumValue(body.plan, 'plan', PLANS);
+      const effectiveCurrentStatus = resolveCanonicalLicense(currentLicense, now.toMillis()).status;
+      if (body.plan !== undefined && !['TRIAL', 'ACTIVE'].includes(effectiveCurrentStatus)) throw new ApiError('CONFLICT', 'Plan changes for expired or suspended licenses must use the lifecycle renewal controls.', 409);
+      if ((currentLicense.status === 'TRIAL' && plan !== 'TRIAL') || (currentLicense.status === 'ACTIVE' && plan === 'TRIAL')) throw new ApiError('INVALID_REQUEST', 'The selected plan is incompatible with the current license status.', 400);
+      const maxUsers = body.maxUsers === undefined ? currentLicense.maxUsers : integer(body.maxUsers, 'maxUsers', 1);
+      if (maxUsers < activeMembersSnapshot.size) throw new ApiError('INVALID_REQUEST', 'maxUsers cannot be less than the active member count.', 400);
+      nextLicense.plan = plan; nextLicense.maxUsers = maxUsers;
+      if (plan === 'TRIAL') {
+        const startValue = body.trialStartedAt === undefined ? currentLicense.trialStartedAt : body.trialStartedAt;
+        const endValue = body.trialEndsAt === undefined ? currentLicense.trialEndsAt : body.trialEndsAt;
+        if (body.trialStartedAt !== undefined || body.trialEndsAt !== undefined) {
+          const startAt = isoDate(startValue, 'trialStartedAt'); const endsAt = isoDate(endValue, 'trialEndsAt');
+          if (endsAt <= startAt) throw new ApiError('INVALID_REQUEST', 'trialEndsAt must be after trialStartedAt.', 400);
+        }
+        nextLicense.trialStartedAt = startValue; nextLicense.trialEndsAt = endValue; nextLicense.subscriptionStartedAt = null; nextLicense.subscriptionEndsAt = null;
+      } else {
+        const startValue = body.subscriptionStartedAt === undefined ? currentLicense.subscriptionStartedAt : body.subscriptionStartedAt;
+        const endValue = body.subscriptionEndsAt === undefined ? currentLicense.subscriptionEndsAt : body.subscriptionEndsAt;
+        if (body.subscriptionStartedAt !== undefined || body.subscriptionEndsAt !== undefined) {
+          const startAt = isoDate(startValue, 'subscriptionStartedAt'); const endsAt = isoDate(endValue, 'subscriptionEndsAt');
+          if (endsAt <= startAt) throw new ApiError('INVALID_REQUEST', 'subscriptionEndsAt must be after subscriptionStartedAt.', 400);
+        }
+        nextLicense.trialStartedAt = null; nextLicense.trialEndsAt = null; nextLicense.subscriptionStartedAt = startValue; nextLicense.subscriptionEndsAt = endValue;
+      }
+    } else if (action === 'activate') {
       const plan = enumValue(body.plan, 'plan', PLANS);
       const maxUsers = integer(body.maxUsers, 'maxUsers', 1);
       if (maxUsers < activeMembersSnapshot.size) throw new ApiError('INVALID_REQUEST', 'maxUsers cannot be less than the active member count.', 400);
@@ -69,7 +116,9 @@ export async function mutateLicense(orgId: string, action: Action, body: Record<
       if (endsAt <= now.toDate()) throw new ApiError('INVALID_REQUEST', 'endsAt must be in the future.', 400);
       nextLicense.plan = plan; nextLicense.status = plan === 'TRIAL' ? 'TRIAL' : 'ACTIVE'; nextLicense.maxUsers = maxUsers;
       if (plan === 'TRIAL') {
-        nextLicense.trialStartedAt = now;
+        const trialStartedAt = body.trialStartedAt === undefined ? now.toDate() : isoDate(body.trialStartedAt, 'trialStartedAt');
+        if (trialStartedAt >= endsAt) throw new ApiError('INVALID_REQUEST', 'endsAt must be after trialStartedAt.', 400);
+        nextLicense.trialStartedAt = Timestamp.fromDate(trialStartedAt);
         nextLicense.trialEndsAt = Timestamp.fromDate(endsAt);
         nextLicense.subscriptionStartedAt = null;
         nextLicense.subscriptionEndsAt = null;
@@ -155,7 +204,7 @@ export async function mutateLicense(orgId: string, action: Action, body: Record<
       action: auditAction(action), actorUid: actor.uid, actorEmail: actor.email, actorRole: actor.role,
       targetType: 'ORGANIZATION', targetId: orgId, organizationId: orgId,
       previousValue: jsonSafe(current), newValue: jsonSafe({ ...nextLicense, updatedAt: now }),
-      metadata: action === 'suspend' ? { reason: optionalString(body, 'reason') } : {}, createdAt: FieldValue.serverTimestamp(),
+      metadata: ['suspend', 'repair-license', 'edit-details'].includes(action) ? { reason: optionalString(body, 'reason') } : {}, createdAt: FieldValue.serverTimestamp(),
     });
     return { organizationId: orgId, license: jsonSafe({ ...nextLicense, updatedAt: now }), mirrors: jsonSafe(mirrors), auditLogId: auditRef.id };
   });

@@ -21,7 +21,7 @@ export function ConsoleApp({ page, orgId }: { page: string; orgId?: string }) {
     {page === 'organizations' && <ConsolePage title="Organizations" description="Manage BSM workspaces, subscriptions, and account status."><OrganizationsModule /></ConsolePage>}
     {page === 'organization-detail' && orgId && <OrganizationDetailModule orgId={orgId} />}
     {page === 'users' && <ConsolePage title="Users" description="Review organization memberships across the BSM platform."><UsersModule /></ConsolePage>}
-    {page === 'licensing' && <ConsolePage title="Licensing" description="Review trials, plans, expirations, and subscription access."><LicensingModule /></ConsolePage>}
+    {page === 'licensing' && <ConsolePage title="Licensing" description="Manage organization activation, subscriptions, user limits, and license status."><LicensingModule /></ConsolePage>}
     {page === 'audit-logs' && <ConsolePage title="Audit Logs" description="Review append-only administrative activity across the platform."><AuditLogsModule /></ConsolePage>}
     {page === 'platform-admins' && <ConsolePage title="Platform Admins" description="Review the administrator identity currently authorized for this console."><PlatformAdminsModule /></ConsolePage>}
     {page === 'settings' && <ConsolePage title="Settings" description="Console configuration and security boundaries."><PlatformAdminsModule /></ConsolePage>}

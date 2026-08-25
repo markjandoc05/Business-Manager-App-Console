@@ -1,14 +1,23 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, RefreshCw } from 'lucide-react';
-import { activateLicense, changePlan, changeSeatLimit, convertTrialToPaid, expireLicense, extendSubscription, extendTrial, getOrganization, reactivateOrganization, renewLicense, suspendOrganization, ConsoleApiError } from '@/lib/console-api';
-import { Organization, OrganizationMember } from '@/lib/types';
+import { Archive, ArrowLeft, CircleCheck, History, PauseCircle, Pencil, RefreshCw, RotateCcw } from 'lucide-react';
+import { ConsoleApiError, getOrganization, lookupOrganizationUser, updateOrganizationProfile } from '@/lib/console-api';
+import type { LicenseActionPayload, Organization, OrganizationMember } from '@/lib/types';
+import { useLicenseAdminActions } from '@/lib/use-license-admin-actions';
+import { MemberAdminAction, MemberAdminPayload, useOrganizationMemberAdmin } from '@/lib/use-organization-member-admin';
 import { ConsolePage } from '../ConsoleShell';
-import { ErrorState, formatDate, LoadingState, StatusBadge } from './ConsolePrimitives';
-import { LicenseAction, LicenseActionDialog, LicenseActionPayload, licenseActionLabel } from './LicenseActionDialog';
+import { CompactActionGroup, CompactBadge, CompactIconButton, ErrorState, formatDateInTimeZone, LoadingState, TruncatedText } from './ConsolePrimitives';
+import { LicenseAction, LicenseActionDialog, licenseActionLabel } from './LicenseActionDialog';
+import { AddMemberDialog, MemberAccessDialog, MemberActionConfirmDialog, OrganizationProfileDialog } from './OrganizationAdminDialogs';
+import { OrganizationUsageSection } from './OrganizationUsageSection';
 import { useAuth } from '@/lib/auth-context';
+
+type MemberFilter = 'ACTIVE' | 'PENDING' | 'SUSPENDED' | 'ARCHIVED' | 'ALL';
+
+function memberStatus(member: OrganizationMember) { return member.status.toLowerCase(); }
+function humanMemberStatus(member: OrganizationMember) { const value = memberStatus(member); return value.charAt(0).toUpperCase() + value.slice(1); }
 
 export function OrganizationDetailModule({ orgId }: { orgId: string }) {
   const router = useRouter();
@@ -16,77 +25,64 @@ export function OrganizationDetailModule({ orgId }: { orgId: string }) {
   const [org, setOrg] = useState<Organization | null>(null);
   const [members, setMembers] = useState<OrganizationMember[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
   const [dialog, setDialog] = useState<LicenseAction | null>(null);
-  const [busy, setBusy] = useState(false);
-  const load = useCallback(async () => {
-    setError(null);
-    const result = await getOrganization(orgId);
-    setOrg(result.organization);
-    setMembers(result.members);
-  }, [orgId]);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+  const [selectedMember, setSelectedMember] = useState<OrganizationMember | null>(null);
+  const [pendingMemberAction, setPendingMemberAction] = useState<{ action: 'SUSPEND_MEMBER' | 'REACTIVATE_MEMBER' | 'ARCHIVE_MEMBER' | 'RESTORE_MEMBER'; member: OrganizationMember } | null>(null);
+  const [memberFilter, setMemberFilter] = useState<MemberFilter>('ACTIVE');
+  const [profileBusy, setProfileBusy] = useState(false);
+  const [profileMessage, setProfileMessage] = useState<string | null>(null);
+  const isSuperAdmin = platformAdmin?.role === 'SUPER_ADMIN';
+  const load = useCallback(async () => { setError(null); const result = await getOrganization(orgId); setOrg(result.organization); setMembers(result.members); }, [orgId]);
   // Data loading is an external synchronization; the state updates are intentional here.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void load().catch((e) => setError(e instanceof Error ? e.message : 'Unable to load organization.')); }, [load]);
+  const { busy: licenseBusy, message: licenseMessage, runAction } = useLicenseAdminActions({ organizationId: orgId, refresh: load, onConflict: () => setDialog(null) });
+  const { busy: memberBusy, message: memberMessage, runMemberAction: runMemberAdminAction } = useOrganizationMemberAdmin({ organizationId: orgId, refresh: load });
+  const visibleMembers = useMemo(() => memberFilter === 'ALL' ? members : members.filter((member) => memberStatus(member) === memberFilter.toLowerCase()), [memberFilter, members]);
+
+  const runProfileUpdate = async (payload: { name: string; businessType: string; currency: string; timezone: string; reason?: string }) => { setProfileBusy(true); setProfileMessage(null); try { await updateOrganizationProfile(orgId, payload); await load(); setProfileOpen(false); setProfileMessage('Organization profile updated successfully.'); } catch (e) { setProfileMessage(e instanceof Error ? e.message : 'The organization profile update failed.'); if (e instanceof ConsoleApiError && e.status === 409) await load().catch(() => undefined); } finally { setProfileBusy(false); } };
+  const invokeMemberAction = async (action: MemberAdminAction, member: OrganizationMember | null, payload: MemberAdminPayload = {}) => { const success = await runMemberAdminAction(action, member?.userId || member?.id, payload); if (success && (action === 'ADD_MEMBER' || action === 'ARCHIVE_MEMBER' || action === 'RESTORE_MEMBER')) { setSelectedMember(null); setAddOpen(false); } return success; };
+  const handleMemberSave = async (member: OrganizationMember, payload: MemberAdminPayload) => { if (await invokeMemberAction('UPDATE_MEMBER', member, payload)) setSelectedMember(null); };
+  const handleArchive = async (member: OrganizationMember) => { await invokeMemberAction('ARCHIVE_MEMBER', member, { reason: `Archived from organization ${orgId}.` }); };
+  const confirmMemberAction = async () => { if (!pendingMemberAction) return; const { action, member } = pendingMemberAction; if (await invokeMemberAction(action, member)) setPendingMemberAction(null); };
+
   if (error) return <div className="p-6 lg:p-10"><ErrorState message={error} /></div>;
   if (!org) return <LoadingState />;
 
   const adminState = org.licenseAdminState;
-  const status = adminState?.status || org.licenseStatus || 'UNKNOWN';
-  const actions: LicenseAction[] = platformAdmin?.role === 'SUPER_ADMIN' ? (adminState?.allowedActions || []) : [];
-  const licenseRows = [
-    ['Plan', org.license?.plan || '—'],
-    ['Maximum users', adminState?.maxUsers ?? '—'],
-    ['Active members', adminState?.activeMembers ?? org.activeMemberCount ?? '—'],
-    ['Trial start', formatDate(org.license?.trialStartedAt)],
-    ['Trial end', formatDate(org.license?.trialEndsAt)],
-    ['Subscription start', formatDate(org.license?.subscriptionStartedAt)],
-    ['Expiration', formatDate(adminState?.expiresAt || undefined)],
-    ['Days remaining', adminState?.daysRemaining ?? '—'],
-    ['Write enabled', org.license ? (org.licenseWriteEnabled ? 'YES' : 'NO') : '—'],
-    ['Updated', formatDate(org.license?.updatedAt)],
-  ];
-  const runAction = async (payload: LicenseActionPayload) => {
-    if (!dialog) return;
-    setBusy(true);
-    setMessage(null);
-    try {
-      const endAt = (value?: string) => new Date(`${value}T23:59:59.000Z`).toISOString();
-      const startAt = (value?: string) => new Date(`${value}T00:00:00.000Z`).toISOString();
-      if (dialog === 'ACTIVATE') await activateLicense(orgId, { plan: payload.plan || 'TRIAL', maxUsers: payload.maxUsers || 1, ...(payload.plan === 'TRIAL' ? {} : { subscriptionStartedAt: startAt(payload.subscriptionStartedAt) }), endsAt: endAt(payload.trialEndsAt || payload.subscriptionEndsAt) });
-      if (dialog === 'CONVERT_TO_PAID') await convertTrialToPaid(orgId, { plan: payload.plan as 'STARTER' | 'TEAM' | 'LEGACY', maxUsers: payload.maxUsers || 1, subscriptionStartedAt: startAt(payload.subscriptionStartedAt), subscriptionEndsAt: endAt(payload.subscriptionEndsAt) });
-      if (dialog === 'EXTEND_SUBSCRIPTION') await extendSubscription(orgId, endAt(payload.subscriptionEndsAt));
-      if (dialog === 'RENEW') await renewLicense(orgId, { plan: payload.plan, maxUsers: payload.maxUsers, subscriptionStartedAt: startAt(payload.subscriptionStartedAt), subscriptionEndsAt: endAt(payload.subscriptionEndsAt) });
-      if (dialog === 'EXTEND_TRIAL') await extendTrial(orgId, endAt(payload.trialEndsAt));
-      if (dialog === 'CHANGE_PLAN') await changePlan(orgId, payload.plan || 'TEAM');
-      if (dialog === 'CHANGE_SEAT_LIMIT') await changeSeatLimit(orgId, payload.maxUsers || 1);
-      if (dialog === 'SUSPEND') await suspendOrganization(orgId, payload.reason);
-      if (dialog === 'EXPIRE') await expireLicense(orgId);
-      if (dialog === 'REACTIVATE') await reactivateOrganization(orgId);
-      await load();
-      setDialog(null);
-      setMessage('Administrative change completed and organization state refreshed.');
-    } catch (e) {
-      setMessage(e instanceof Error ? e.message : 'The administrative request failed.');
-      if (e instanceof ConsoleApiError && e.status === 409) {
-        setDialog(null);
-        try { await load(); } catch (refreshError) { setError(refreshError instanceof Error ? refreshError.message : 'Unable to refresh organization state.'); }
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
+  const activeMembers = org.activeMemberCount ?? adminState?.activeMembers ?? 0;
+  const maxUsers = adminState?.maxUsers ?? null;
+  const activeAdmins = members.filter((member) => memberStatus(member) === 'active' && member.role === 'ADMIN').length;
+  const archivedMembers = members.filter((member) => memberStatus(member) === 'archived').length;
+  const pendingMembers = members.filter((member) => memberStatus(member) === 'pending').length;
+  const suspendedMembers = members.filter((member) => memberStatus(member) === 'suspended').length;
+  const humanStatus = org.licenseDocumentState === 'NO_LICENSE' ? 'No License' : org.licenseDocumentState === 'INVALID_LICENSE' ? 'Needs Attention' : adminState?.status === 'TRIAL' ? 'Trial' : adminState?.status === 'ACTIVE' ? 'Active' : adminState?.status === 'EXPIRED' ? 'Expired' : adminState?.status === 'SUSPENDED' ? 'Suspended' : 'Needs Attention';
+  const actions: LicenseAction[] = isSuperAdmin ? (adminState?.allowedActions || []) : [];
+  const licenseRows = [['Plan', adminState?.plan || '—'], ['Canonical', org.licenseDocumentState === 'VALID_LICENSE' ? 'Valid' : org.licenseDocumentState === 'INVALID_LICENSE' ? 'Invalid' : 'Missing'], ['Active members', activeMembers], ['Maximum users', maxUsers ?? '—'], ['Trial start', formatDateInTimeZone(org.license?.trialStartedAt, org.timezone)], ['Trial end', formatDateInTimeZone(org.license?.trialEndsAt, org.timezone)], ['Subscription start', formatDateInTimeZone(org.license?.subscriptionStartedAt, org.timezone)], ['Effective expiration', formatDateInTimeZone(adminState?.expiresAt || undefined, org.timezone)], ['Days remaining', adminState?.daysRemaining ?? '—']];
+  const viewHistory = () => router.push(`/audit-logs?organizationId=${encodeURIComponent(orgId)}`);
+  const submitLicenseAction = async (payload: LicenseActionPayload) => { if (dialog && await runAction(dialog, payload)) setDialog(null); };
+  const tabs: Array<{ value: MemberFilter; label: string; count: number }> = [{ value: 'ACTIVE', label: 'Active', count: activeMembers }, { value: 'PENDING', label: 'Pending', count: pendingMembers }, { value: 'SUSPENDED', label: 'Suspended', count: suspendedMembers }, { value: 'ARCHIVED', label: 'Archived', count: archivedMembers }, { value: 'ALL', label: 'All', count: members.length }];
+  const actionButtons = (member: OrganizationMember) => { const status = memberStatus(member); const identity = member.name || member.email || member.id; return <CompactActionGroup>{isSuperAdmin && status !== 'archived' && <CompactIconButton label={`Edit Member ${identity}`} onClick={() => setSelectedMember(member)} className="text-blue-700"><Pencil className="h-4 w-4" aria-hidden="true" /></CompactIconButton>}{isSuperAdmin && status === 'active' && <CompactIconButton label={`Suspend Access for ${identity}`} onClick={() => setPendingMemberAction({ action: 'SUSPEND_MEMBER', member })} disabled={memberBusy} className="border-amber-200 text-amber-700 hover:border-amber-300 hover:bg-amber-50"><PauseCircle className="h-4 w-4" aria-hidden="true" /></CompactIconButton>}{isSuperAdmin && ['active', 'pending', 'inactive', 'suspended'].includes(status) && <CompactIconButton label={`Archive Member ${identity}`} onClick={() => setPendingMemberAction({ action: 'ARCHIVE_MEMBER', member })} disabled={memberBusy} className="border-rose-200 text-rose-700 hover:border-rose-300 hover:bg-rose-50"><Archive className="h-4 w-4" aria-hidden="true" /></CompactIconButton>}{isSuperAdmin && ['pending', 'inactive', 'suspended'].includes(status) && <CompactIconButton label={`Reactivate Access for ${identity}`} onClick={() => setPendingMemberAction({ action: 'REACTIVATE_MEMBER', member })} disabled={memberBusy} className="border-emerald-200 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-50"><CircleCheck className="h-4 w-4" aria-hidden="true" /></CompactIconButton>}{isSuperAdmin && status === 'archived' && <CompactIconButton label={`Restore Member ${identity}`} onClick={() => setPendingMemberAction({ action: 'RESTORE_MEMBER', member })} disabled={memberBusy} className="border-emerald-200 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-50"><RotateCcw className="h-4 w-4" aria-hidden="true" /></CompactIconButton>}<CompactIconButton label={`View Audit History for ${identity}`} onClick={viewHistory}><History className="h-4 w-4" aria-hidden="true" /></CompactIconButton></CompactActionGroup>; };
 
-  return <ConsolePage title={org.name} description={org.slug ? `/${org.slug}` : 'Organization details'} action={<div className="flex gap-4"><button onClick={() => void load()} className="flex items-center gap-2 text-sm font-bold text-gray-500"><RefreshCw className="h-4 w-4" />Refresh</button><button onClick={() => router.push('/organizations')} className="flex items-center gap-2 text-sm font-bold text-blue-600"><ArrowLeft className="h-4 w-4" />Back</button></div>}>
+  return <ConsolePage title={org.name} description={org.slug ? `/${org.slug}` : 'Organization details'} action={<div className="flex flex-wrap gap-4"><button type="button" onClick={() => void load()} aria-label="Refresh organization" className="flex items-center gap-2 text-sm font-bold text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"><RefreshCw className="h-4 w-4" />Refresh</button><button type="button" onClick={() => router.push('/organizations')} className="flex items-center gap-2 text-sm font-bold text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500"><ArrowLeft className="h-4 w-4" />Back</button></div>}>
     <div className="space-y-6">
-      {message && <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-800">{message}</div>}
-      {adminState?.documentState === 'INVALID_LICENSE' && <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900">License requires attention</div>}
+      {(licenseMessage || memberMessage || profileMessage) && <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-800" role="status">{licenseMessage || memberMessage || profileMessage}</div>}
+      {org.licenseDocumentState === 'INVALID_LICENSE' && <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950"><p className="font-black">License requires attention</p><p className="mt-1">The canonical license record is incomplete or invalid. Repair the license before normal subscription actions can continue.</p><div className="mt-3 flex flex-wrap gap-2">{isSuperAdmin && <button type="button" onClick={() => setDialog('REPAIR_LICENSE')} className="rounded-lg bg-amber-700 px-3 py-2 text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-amber-500">Repair License</button>}<button type="button" onClick={viewHistory} className="rounded-lg border border-amber-300 px-3 py-2 text-xs font-bold text-amber-900 focus:outline-none focus:ring-2 focus:ring-amber-500">View Audit History</button></div></div>}
+      {org.organizationAdminState?.attentionReasons.some((reason) => ['MISSING_TIMEZONE', 'MISSING_CURRENCY'].includes(reason)) && <div className="rounded-xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-950"><p className="font-black">Organization setup warning</p><p className="mt-1">Set the organization timezone and currency for consistent local date and monetary presentation.</p></div>}
+      {isSuperAdmin && <section className="rounded-xl border border-blue-200 bg-blue-50/50 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-black text-blue-950">SUPER ADMIN CONTROLS</h2><p className="mt-1 text-sm text-blue-900/70">Operational controls for profile, licensing, subscriptions, and workspace members.</p></div><div className="flex flex-wrap gap-2"><button type="button" onClick={() => setProfileOpen(true)} className="rounded-lg bg-blue-700 px-3 py-2 text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-blue-500">Edit Organization</button><button type="button" onClick={viewHistory} className="rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-bold text-blue-800 focus:outline-none focus:ring-2 focus:ring-blue-500"><History className="mr-1 inline h-4 w-4" />View License History</button></div></div></section>}
       <div className="grid gap-6 lg:grid-cols-2">
-        <section className="rounded-xl border border-gray-200 bg-white p-6"><h2 className="font-black">Organization overview</h2><dl className="mt-5 grid grid-cols-2 gap-4 text-sm">{[['Business name', org.name], ['Slug', org.slug || '—'], ['Business type', org.businessType || '—'], ['Currency', org.currency || '—'], ['Timezone', org.timezone || '—'], ['Organization ID', org.id]].map(([label, value]) => <div key={label}><dt className="text-xs font-bold uppercase tracking-wider text-gray-400">{label}</dt><dd className="mt-1 break-words text-gray-800">{value}</dd></div>)}</dl></section>
-        <section className="rounded-xl border border-gray-200 bg-white p-6"><div className="flex items-center justify-between"><h2 className="font-black">License</h2><StatusBadge status={status} /></div><dl className="mt-5 grid grid-cols-2 gap-4 text-sm">{licenseRows.map(([label, value]) => <div key={label}><dt className="text-xs font-bold uppercase tracking-wider text-gray-400">{label}</dt><dd className="mt-1 text-gray-800">{value}</dd></div>)}</dl><div className="mt-6 flex flex-wrap gap-2">{actions.map((item) => <button key={item} onClick={() => setDialog(item)} disabled={busy} className="rounded-lg border border-gray-200 px-3 py-2 text-[10px] font-black tracking-wider text-gray-700 hover:border-blue-400 hover:text-blue-600 disabled:opacity-50">{licenseActionLabel(item)}</button>)}</div></section>
+        <section className="rounded-xl border border-gray-200 bg-white p-6"><div className="flex items-center justify-between gap-3"><h2 className="font-black">Organization Profile</h2>{org.organizationAdminState?.health !== 'HEALTHY' && <span className="text-xs font-bold text-amber-700">{org.organizationAdminState?.health === 'ACTION_REQUIRED' ? 'Action Required' : 'Warning'}</span>}</div><dl className="mt-5 grid grid-cols-2 gap-4 text-sm">{[['Business name', org.name], ['Slug', org.slug || '—'], ['Business type', org.businessType || '—'], ['Currency', org.currency || 'Not Set'], ['Timezone', org.timezone || 'Not Set'], ['Organization ID', org.id]].map(([label, value]) => <div key={label}><dt className="text-xs font-bold uppercase tracking-wider text-gray-400">{label}</dt><dd className="mt-1 break-words text-gray-800">{value}</dd></div>)}</dl></section>
+        <section id="license-card" className="rounded-xl border border-gray-200 bg-white p-6"><div className="flex items-center justify-between gap-3"><h2 className="font-black">Licensing & Subscription</h2><span className="rounded-full border border-gray-200 bg-gray-50 px-2 py-1 text-[10px] font-black uppercase tracking-wider text-gray-700">{humanStatus}</span></div><dl className="mt-5 grid grid-cols-2 gap-4 text-sm">{licenseRows.map(([label, value]) => <div key={label}><dt className="text-xs font-bold uppercase tracking-wider text-gray-400">{label}</dt><dd className="mt-1 text-gray-800">{value}</dd></div>)}</dl>{isSuperAdmin && <div className="mt-6 flex flex-wrap gap-2">{actions.map((item) => <button type="button" key={item} onClick={() => setDialog(item)} disabled={licenseBusy} className="rounded-lg border border-gray-200 px-3 py-2 text-[10px] font-black tracking-wider text-gray-700 hover:border-blue-400 hover:text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50">{licenseActionLabel(item)}</button>)}</div>}</section>
       </div>
-      <section className="rounded-xl border border-gray-200 bg-white p-6"><h2 className="font-black">Members <span className="ml-1 text-sm font-normal text-gray-400">{members.length}</span></h2><div className="mt-4 overflow-x-auto"><table className="w-full min-w-[650px] text-left text-sm"><thead className="border-b border-gray-200 text-[10px] uppercase tracking-wider text-gray-400"><tr><th className="py-3">Name</th><th>Email</th><th>Role</th><th>Status</th><th>Joined</th></tr></thead><tbody className="divide-y divide-gray-100">{members.map((member) => <tr key={member.id}><td className="py-3 font-semibold">{member.name || '—'}</td><td>{member.email || '—'}</td><td>{member.role}</td><td>{member.status}</td><td>{formatDate(member.joinedAt)}</td></tr>)}</tbody></table></div></section>
+      <OrganizationUsageSection orgId={orgId} isSuperAdmin={isSuperAdmin} />
+      <section id="members-card" className="rounded-xl border border-gray-200 bg-white p-6"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="font-black">Members & Access</h2><p className="mt-1 text-sm text-gray-500">Organization membership only; platform administrator roles are separate.</p></div>{isSuperAdmin && <button type="button" onClick={() => setAddOpen(true)} className="rounded-lg bg-blue-700 px-3 py-2 text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-blue-500">Add Member</button>}</div><div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4"><div className="rounded-lg bg-gray-50 p-3"><p className="text-xs text-gray-500">Active Users</p><p className="mt-1 text-xl font-black">{activeMembers}</p></div><div className="rounded-lg bg-gray-50 p-3"><p className="text-xs text-gray-500">Seat Limit</p><p className="mt-1 text-xl font-black">{maxUsers ?? '—'}</p></div><div className="rounded-lg bg-gray-50 p-3"><p className="text-xs text-gray-500">Available Seats</p><p className="mt-1 text-xl font-black">{maxUsers === null ? '—' : Math.max(0, maxUsers - activeMembers)}</p></div><div className="rounded-lg bg-gray-50 p-3"><p className="text-xs text-gray-500">Active Admins</p><p className="mt-1 text-xl font-black">{activeAdmins}</p></div></div><div className="mt-5 flex flex-wrap gap-2" role="tablist" aria-label="Member access filters">{tabs.map((tab) => <button type="button" role="tab" aria-selected={memberFilter === tab.value} key={tab.value} onClick={() => setMemberFilter(tab.value)} className={`rounded-lg px-3 py-2 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-blue-500 ${memberFilter === tab.value ? 'bg-blue-700 text-white' : 'border border-gray-200 text-gray-700'}`}>{tab.label} <span className="ml-1 opacity-70">{tab.count}</span></button>)}</div><div className="mt-4 hidden overflow-x-auto md:block"><table className="w-full min-w-[900px] table-fixed text-left text-sm"><thead className="border-b border-gray-200 text-[10px] uppercase tracking-wide text-gray-400"><tr><th className="w-[18%] px-3 py-2">Name</th><th className="w-[22%] px-3 py-2">Email</th><th className="w-[12%] px-3 py-2">Role</th><th className="w-[12%] px-3 py-2">Access</th><th className="w-[13%] px-3 py-2">Joined</th><th className="w-[13%] px-3 py-2">Updated</th><th className="w-[20%] px-3 py-2">Actions</th></tr></thead><tbody className="divide-y divide-gray-100">{visibleMembers.map((member) => { const identity = member.name || member.email || member.id; const status = humanMemberStatus(member); return <tr key={member.id} className="h-14 hover:bg-gray-50"><td className="min-w-0 px-3 py-2 font-semibold"><TruncatedText value={identity} /></td><td className="px-3 py-2"><TruncatedText value={member.email} className="text-gray-600" /></td><td className="px-3 py-2"><CompactBadge label={member.role} tone="info" /></td><td className="px-3 py-2"><CompactBadge label={status} tone={memberStatus(member) === 'active' ? 'success' : memberStatus(member) === 'archived' ? 'danger' : 'warning'} /></td><td className="px-3 py-2 whitespace-nowrap">{formatDateInTimeZone(member.joinedAt, org.timezone)}</td><td className="px-3 py-2 whitespace-nowrap text-gray-500">{formatDateInTimeZone(member.lastLogin, org.timezone)}</td><td className="px-3 py-2">{actionButtons(member)}</td></tr>; })}</tbody></table></div><div className="mt-4 space-y-3 md:hidden">{visibleMembers.map((member) => { const identity = member.name || member.email || member.id; const status = humanMemberStatus(member); return <article key={member.id} className="rounded-lg border border-gray-200 p-4"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><TruncatedText value={identity} className="font-bold" />{member.name && <TruncatedText value={member.email} className="text-xs text-gray-500" />}</div><CompactBadge label={status} tone={memberStatus(member) === 'active' ? 'success' : memberStatus(member) === 'archived' ? 'danger' : 'warning'} /></div><dl className="mt-3 grid grid-cols-2 gap-3 text-sm"><div><dt className="text-xs text-gray-400">Role</dt><dd><CompactBadge label={member.role} tone="info" /></dd></div><div><dt className="text-xs text-gray-400">Joined</dt><dd>{formatDateInTimeZone(member.joinedAt, org.timezone)}</dd></div></dl><div className="mt-3">{actionButtons(member)}</div></article>; })}</div></section>
     </div>
-    {dialog && <LicenseActionDialog action={dialog} organization={org} activeMembers={org.activeMemberCount ?? 0} busy={busy} onClose={() => !busy && setDialog(null)} onSubmit={(payload) => void runAction(payload)} />}
+    {dialog && <LicenseActionDialog action={dialog} organization={org} activeMembers={activeMembers} busy={licenseBusy} onClose={() => !licenseBusy && setDialog(null)} onSubmit={(payload) => void submitLicenseAction(payload)} />}
+    {profileOpen && <OrganizationProfileDialog organization={org} busy={profileBusy} onClose={() => !profileBusy && setProfileOpen(false)} onSubmit={(payload) => void runProfileUpdate(payload)} />}
+    {addOpen && <AddMemberDialog busy={memberBusy} onClose={() => !memberBusy && setAddOpen(false)} onLookup={(email) => lookupOrganizationUser(orgId, email)} onSubmit={(payload) => void invokeMemberAction('ADD_MEMBER', null, payload)} />}
+    {selectedMember && <MemberAccessDialog member={selectedMember} activeMembers={activeMembers} maxUsers={maxUsers} busy={memberBusy} onClose={() => !memberBusy && setSelectedMember(null)} onSubmit={(payload) => void handleMemberSave(selectedMember, payload)} onArchive={() => void handleArchive(selectedMember)} />}
+    {pendingMemberAction && <MemberActionConfirmDialog action={pendingMemberAction.action} member={pendingMemberAction.member} busy={memberBusy} onClose={() => !memberBusy && setPendingMemberAction(null)} onConfirm={confirmMemberAction} />}
   </ConsolePage>;
 }

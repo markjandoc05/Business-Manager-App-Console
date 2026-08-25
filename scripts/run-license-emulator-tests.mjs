@@ -20,7 +20,7 @@ const environment = {
 };
 
 const tsx = fileURLToPath(new URL('../node_modules/tsx/dist/cli.mjs', import.meta.url));
-for (const testFile of ['scripts/check-license-integration-imports.mjs', 'tests/console-license-integration.test.mjs']) {
+for (const testFile of ['scripts/check-license-integration-imports.mjs', 'tests/console-license-integration.test.mjs', 'tests/console-admin-controls.integration.test.mjs', 'tests/organization-usage.integration.test.mjs']) {
   const result = spawnSync(process.execPath, [tsx, '--test', testFile], { env: environment, stdio: 'inherit' });
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
