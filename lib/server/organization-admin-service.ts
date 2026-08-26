@@ -10,6 +10,8 @@ const PROFILE_FIELDS = ['name', 'businessType', 'currency', 'timezone'] as const
 const MEMBER_ROLES = ['ADMIN', 'MANAGER', 'USER'] as const;
 const MEMBER_STATUSES = ['active', 'pending', 'inactive', 'suspended', 'archived', 'disabled'] as const;
 const CURRENCY_CODES = new Set((Intl as unknown as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf?.('currency') || []);
+const LICENSE_CONFIGURATION_ERROR = 'Organization licensing is not configured correctly. Repair the license before adding or activating users.';
+const SEAT_LIMIT_ERROR = 'This organization has reached its active user limit.';
 
 function jsonSafe(value: unknown): unknown {
   if (value && typeof value === 'object' && 'toDate' in value && typeof value.toDate === 'function') return value.toDate().toISOString();
@@ -36,6 +38,12 @@ function validateProfileValue(field: string, value: string | null) {
     try { new Intl.DateTimeFormat('en-US', { timeZone: value }).format(); } catch { throw new ApiError('INVALID_REQUEST', 'timezone must be an IANA timezone identifier.', 400); }
   }
   if (field === 'currency' && (!/^[A-Z]{3}$/.test(value) || (CURRENCY_CODES.size > 0 && !CURRENCY_CODES.has(value)))) throw new ApiError('INVALID_REQUEST', 'currency must be a valid ISO 4217 currency code.', 400);
+}
+
+function enforceActiveSeatAvailability(licenseData: Record<string, unknown> | undefined, activeSeatCount: number) {
+  const license = licenseData ? parseCanonicalLicense(licenseData) : null;
+  if (!license) throw new ApiError('CONFLICT', LICENSE_CONFIGURATION_ERROR, 409);
+  if (activeSeatCount >= license.maxUsers) throw new ApiError('CONFLICT', SEAT_LIMIT_ERROR, 409);
 }
 
 export async function updateOrganizationProfile(orgId: string, body: Record<string, unknown>, actor: AuthenticatedPlatformAdmin) {
@@ -109,8 +117,7 @@ export async function updateOrganizationMember(orgId: string, memberUid: string,
     const activeMembers = membersSnapshot.docs.filter((item) => (typeof item.data().status === 'string' ? item.data().status.toLowerCase() : '') === 'active');
     const currentIsActive = currentStatus === 'active';
     if (!currentIsActive && resolvedStatus === 'active') {
-      const license = licenseSnapshot.exists ? parseCanonicalLicense(licenseSnapshot.data() || {}) : null;
-      if (license && activeMembers.length >= license.maxUsers) throw new ApiError('CONFLICT', 'Organization user limit has been reached.', 409);
+      enforceActiveSeatAvailability(licenseSnapshot.exists ? licenseSnapshot.data() || {} : undefined, activeMembers.length);
     }
     if (currentIsActive && currentRole === 'ADMIN' && (resolvedStatus !== 'active' || resolvedRole !== 'ADMIN')) {
       const otherActiveAdmins = activeMembers.filter((item) => item.id !== memberSnapshot.id && item.data().role === 'ADMIN');
@@ -158,8 +165,7 @@ export async function addOrganizationMember(orgId: string, body: Record<string, 
     if (!organizationSnapshot.exists) throw new ApiError('NOT_FOUND', 'Organization not found.', 404);
     if (memberSnapshot.exists || membersSnapshot.docs.some((item) => item.data().userId === existingUser.uid)) throw new ApiError('CONFLICT', 'This user is already a member of the organization.', 409);
     const activeMembers = membersSnapshot.docs.filter((item) => item.data().status === 'active').length;
-    const license = licenseSnapshot.exists ? parseCanonicalLicense(licenseSnapshot.data() || {}) : null;
-    if (license && activeMembers >= license.maxUsers) throw new ApiError('CONFLICT', 'Organization user limit has been reached.', 409);
+    enforceActiveSeatAvailability(licenseSnapshot.exists ? licenseSnapshot.data() || {} : undefined, activeMembers);
     const now = FieldValue.serverTimestamp();
     transaction.set(memberRef, { userId: existingUser.uid, email: existingUser.email, name: existingUser.name, role, status: 'active', joinedAt: now, createdAt: now, updatedAt: now, updatedBy: actor.uid });
     transaction.set(auditRef, {

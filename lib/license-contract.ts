@@ -28,8 +28,12 @@ export function parseCanonicalLicense(data: Record<string, unknown>): CanonicalL
   if (timestampFields.some((field) => data[field] !== undefined && data[field] !== null && timestampMillis(data[field]) === undefined)) return null;
   if (status === 'TRIAL' && plan !== 'TRIAL') return null;
   if (status === 'ACTIVE' && plan === 'TRIAL') return null;
-  if (status === 'TRIAL' && (timestampMillis(data.trialStartedAt) === undefined || timestampMillis(data.trialEndsAt) === undefined)) return null;
-  if (status === 'ACTIVE' && (timestampMillis(data.subscriptionStartedAt) === undefined || timestampMillis(data.subscriptionEndsAt) === undefined)) return null;
+  const trialStartedAt = timestampMillis(data.trialStartedAt);
+  const trialEndsAt = timestampMillis(data.trialEndsAt);
+  const subscriptionStartedAt = timestampMillis(data.subscriptionStartedAt);
+  const subscriptionEndsAt = timestampMillis(data.subscriptionEndsAt);
+  if (status === 'TRIAL' && (trialStartedAt === undefined || trialEndsAt === undefined || trialEndsAt <= trialStartedAt)) return null;
+  if (status === 'ACTIVE' && (subscriptionStartedAt === undefined || subscriptionEndsAt === undefined || subscriptionEndsAt <= subscriptionStartedAt)) return null;
   if (data.features !== undefined && (data.features === null || typeof data.features !== 'object' || Array.isArray(data.features) || Object.values(data.features as Record<string, unknown>).some((feature) => typeof feature !== 'boolean'))) return null;
   return {
     plan,

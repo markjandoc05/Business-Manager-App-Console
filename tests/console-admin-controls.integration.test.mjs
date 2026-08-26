@@ -39,6 +39,19 @@ async function seedInvalid(label, memberCount = 1) {
   for (let index = 0; index < memberCount; index += 1) await ref.collection('members').doc(`${label}-member-${index}`).set({ userId: `${label}-member-${index}`, role: index === 0 ? 'ADMIN' : 'USER', status: 'active' });
   return { orgId, ref, licenseRef: ref.collection('license').doc('current') };
 }
+function validMemberLicense(status = 'ACTIVE', maxUsers = 2) {
+  return status === 'TRIAL'
+    ? { plan: 'TRIAL', status: 'TRIAL', maxUsers, trialStartedAt: past(), trialEndsAt: future(30), features: { crm: true } }
+    : { plan: 'TEAM', status, maxUsers, subscriptionStartedAt: past(), subscriptionEndsAt: future(365), features: { crm: true } };
+}
+async function seedMemberOrganization(label, license, members = []) {
+  const orgId = `admin-controls-seat-${label}-${suffix}`;
+  const ref = adminDb.collection('organizations').doc(orgId);
+  await ref.set({ name: `${label} Organization` });
+  if (license) await ref.collection('license').doc('current').set(license);
+  for (const member of members) await ref.collection('members').doc(member.uid).set({ userId: member.uid, email: `${member.uid}@example.test`, role: member.role || 'USER', status: member.status });
+  return { orgId, ref };
+}
 
 test('invalid license repair is atomic, authorized, auditable, and seat-safe', async () => {
   const superAdmin = await user('repair-super');
@@ -149,6 +162,7 @@ test('existing-user member add, archive, restore, and seat guards preserve histo
   result = await callAdd(superAdmin.idToken, orgId, { email: 'missing-account@example.test', role: 'USER' });
   assert.equal(result.status, 404);
   const third = await user('add-third');
+  assert.equal((await ref.collection('members').where('status', '==', 'active').get()).size, 2);
   result = await callAdd(superAdmin.idToken, orgId, { email: third.email, role: 'USER' });
   assert.equal(result.status, 409);
   result = await callAdd(support.idToken, orgId, { email: notMember.email, role: 'USER' });
@@ -173,6 +187,79 @@ test('existing-user member add, archive, restore, and seat guards preserve histo
   assert.ok(audit.docs.some((doc) => doc.data().action === 'ORGANIZATION_MEMBER_ADDED'));
   assert.ok(audit.docs.some((doc) => doc.data().action === 'ORGANIZATION_MEMBER_ARCHIVED'));
   assert.ok(audit.docs.some((doc) => doc.data().action === 'ORGANIZATION_MEMBER_RESTORED'));
+});
+
+test('membership seat operations fail closed on invalid canonical licenses and preserve non-seat behavior', async () => {
+  const superAdmin = await user('seat-super');
+  await adminDb.collection('platformAdmins').doc(superAdmin.localId).set({ role: 'SUPER_ADMIN', status: 'ACTIVE', email: superAdmin.email });
+  const target = async (label) => user(`seat-${label}`);
+  const expectAddRejected = async (label, license, expectedMessage = 'Organization licensing is not configured correctly. Repair the license before adding or activating users.') => {
+    const targetUser = await target(label);
+    const organization = await seedMemberOrganization(label, license);
+    const result = await callAdd(superAdmin.idToken, organization.orgId, { email: targetUser.email, role: 'USER' });
+    assert.equal(result.status, 409);
+    assert.equal(result.error?.message, expectedMessage);
+    assert.equal((await organization.ref.collection('members').get()).size, 0);
+  };
+
+  await expectAddRejected('missing', null);
+  await expectAddRejected('malformed', { plan: 'TEAM', status: 'ACTIVE' });
+  await expectAddRejected('invalid-plan', { ...validMemberLicense(), plan: 'INVALID' });
+  await expectAddRejected('invalid-status', { ...validMemberLicense(), status: 'INVALID' });
+
+  const activeTarget = await user('seat-active-target');
+  const activeOrganization = await seedMemberOrganization('active-below-limit', validMemberLicense('ACTIVE', 2), [{ uid: `active-existing-${suffix}`, role: 'ADMIN', status: 'active' }]);
+  let result = await callAdd(superAdmin.idToken, activeOrganization.orgId, { email: activeTarget.email, role: 'USER' });
+  assert.equal(result.status, 201, result.error?.message);
+
+  const trialTarget = await user('seat-trial-target');
+  const trialOrganization = await seedMemberOrganization('trial-below-limit', validMemberLicense('TRIAL', 1));
+  result = await callAdd(superAdmin.idToken, trialOrganization.orgId, { email: trialTarget.email, role: 'USER' });
+  assert.equal(result.status, 201, result.error?.message);
+
+  const fullTarget = await user('seat-full-target');
+  const fullOrganization = await seedMemberOrganization('at-limit', validMemberLicense('ACTIVE', 1), [{ uid: `full-existing-${suffix}`, role: 'ADMIN', status: 'active' }]);
+  assert.equal((await fullOrganization.ref.collection('members').where('status', '==', 'active').get()).size, 1);
+  result = await callAdd(superAdmin.idToken, fullOrganization.orgId, { email: fullTarget.email, role: 'USER' });
+  assert.equal(result.status, 409);
+  assert.equal(result.error?.message, 'This organization has reached its active user limit.');
+
+  const inactiveUid = `inactive-${suffix}`;
+  const secondInactiveUid = `second-inactive-${suffix}`;
+  const missingLicenseReactivationUid = `missing-license-reactivation-${suffix}`;
+  const missingLicenseReactivationOrganization = await seedMemberOrganization('reactivation-missing-license', null, [{ uid: missingLicenseReactivationUid, role: 'USER', status: 'inactive' }]);
+  result = await callMember(superAdmin.idToken, missingLicenseReactivationOrganization.orgId, missingLicenseReactivationUid, { status: 'active' });
+  assert.equal(result.status, 409);
+  assert.equal(result.error?.message, 'Organization licensing is not configured correctly. Repair the license before adding or activating users.');
+  assert.equal((await missingLicenseReactivationOrganization.ref.collection('members').doc(missingLicenseReactivationUid).get()).data().status, 'inactive');
+
+  const reactivationOrganization = await seedMemberOrganization('reactivation', validMemberLicense('ACTIVE', 2), [
+    { uid: `reactivation-existing-${suffix}`, role: 'ADMIN', status: 'active' },
+    { uid: inactiveUid, role: 'USER', status: 'inactive' },
+    { uid: secondInactiveUid, role: 'USER', status: 'inactive' },
+  ]);
+  result = await callMember(superAdmin.idToken, reactivationOrganization.orgId, inactiveUid, { status: 'active' });
+  assert.equal(result.status, 200, result.error?.message);
+  result = await callMember(superAdmin.idToken, reactivationOrganization.orgId, secondInactiveUid, { status: 'active' });
+  assert.equal(result.status, 409);
+  assert.equal(result.error?.message, 'This organization has reached its active user limit.');
+
+  const roleChangeUid = `role-change-${suffix}`;
+  const roleOrganization = await seedMemberOrganization('role-only-without-license', null, [{ uid: roleChangeUid, role: 'USER', status: 'active' }]);
+  result = await callMember(superAdmin.idToken, roleOrganization.orgId, roleChangeUid, { role: 'MANAGER' });
+  assert.equal(result.status, 200, result.error?.message);
+  assert.equal((await roleOrganization.ref.collection('members').doc(roleChangeUid).get()).data().role, 'MANAGER');
+
+  const crossOrgTarget = await user('seat-cross-org-target');
+  const limitedOrganization = await seedMemberOrganization('cross-org-limited', validMemberLicense('ACTIVE', 1), [{ uid: `cross-existing-${suffix}`, role: 'ADMIN', status: 'active' }]);
+  const availableOrganization = await seedMemberOrganization('cross-org-available', validMemberLicense('ACTIVE', 1));
+  result = await callAdd(superAdmin.idToken, availableOrganization.orgId, { email: crossOrgTarget.email, role: 'USER' });
+  assert.equal(result.status, 201, result.error?.message);
+  const deniedTarget = await user('seat-cross-org-denied');
+  result = await callAdd(superAdmin.idToken, limitedOrganization.orgId, { email: deniedTarget.email, role: 'USER' });
+  assert.equal(result.status, 409);
+  assert.equal((await availableOrganization.ref.collection('members').get()).size, 1);
+  assert.equal((await limitedOrganization.ref.collection('members').get()).size, 1);
 });
 
 test('member API routes enforce platform authorization and expose the shared mutation contract', async () => {

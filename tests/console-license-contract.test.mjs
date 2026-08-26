@@ -8,7 +8,10 @@ import { loadLicenseMirrorState } from '../lib/license-mirror.ts';
 
 const future = new Date(Date.now() + 86_400_000).toISOString();
 const past = new Date(Date.now() - 86_400_000).toISOString();
-const license = (status, end = future) => ({ plan: status === 'TRIAL' ? 'TRIAL' : 'TEAM', status, maxUsers: 3, features: { crm: true }, trialStartedAt: status === 'TRIAL' ? new Date(Date.now() - 86_400_000).toISOString() : undefined, trialEndsAt: status === 'TRIAL' ? end : undefined, subscriptionStartedAt: status === 'ACTIVE' ? new Date(Date.now() - 86_400_000).toISOString() : undefined, subscriptionEndsAt: status === 'ACTIVE' ? end : undefined });
+const license = (status, end = future) => {
+  const startedAt = new Date(new Date(end).getTime() - 86_400_000).toISOString();
+  return { plan: status === 'TRIAL' ? 'TRIAL' : 'TEAM', status, maxUsers: 3, features: { crm: true }, trialStartedAt: status === 'TRIAL' ? startedAt : undefined, trialEndsAt: status === 'TRIAL' ? end : undefined, subscriptionStartedAt: status === 'ACTIVE' ? startedAt : undefined, subscriptionEndsAt: status === 'ACTIVE' ? end : undefined };
+};
 
 function fakeFirestore(organizationData, canonicalData, canonicalExists = true) {
   const organizationRef = { collection: () => ({ doc: () => ({ get: async () => ({ exists: canonicalExists, data: () => canonicalData }) }) }), get: async () => ({ exists: true, data: () => organizationData }) };
@@ -25,6 +28,7 @@ test('malformed or missing canonical licenses are safe and non-writable', () => 
   assert.equal(parseCanonicalLicense({ status: 'ACTIVE', plan: 'TEAM' }), null);
   assert.equal(parseCanonicalLicense({ status: 'EXPIRED', plan: 'TEAM', maxUsers: 3, subscriptionEndsAt: 'not-a-date' }), null);
   assert.equal(parseCanonicalLicense({ status: 'SUSPENDED', plan: 'TEAM', maxUsers: 3, features: { crm: 'yes' } }), null);
+  assert.equal(parseCanonicalLicense({ ...license('ACTIVE'), subscriptionStartedAt: future, subscriptionEndsAt: past }), null);
   assert.equal(resolveCanonicalLicense(null).canWrite, false);
   assert.equal(resolveCanonicalLicense(null).status, 'UNKNOWN');
 });
@@ -244,7 +248,7 @@ test('V1.1E exposes existing-user membership controls, metadata validation, and 
   assert.match(service, /IANA timezone identifier/);
   assert.match(service, /ISO 4217 currency code/);
   assert.match(service, /at least one active ADMIN/);
-  assert.match(service, /Organization user limit has been reached/);
+  assert.match(service, /This organization has reached its active user limit/);
   assert.match(api, /lookupOrganizationUser/);
   assert.match(api, /addOrganizationMember/);
   assert.match(hook, /ADD_MEMBER/);
