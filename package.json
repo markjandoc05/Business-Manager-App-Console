@@ -12,6 +12,7 @@
     "test:dashboard": "node --experimental-strip-types --test tests/dashboard-metrics-contract.test.mjs",
     "test:usage": "node --experimental-strip-types --test tests/organization-usage-contract.test.mjs",
     "test:console-reads": "node --test tests/console-read-api-contract.test.mjs",
+    "test:index-errors": "node --experimental-strip-types --test tests/firestore-index-error.test.mjs",
     "audit:license-mirrors": "tsx scripts/repair-license-mirrors.mjs",
     "test:license:expiration": "FIREBASE_ADMIN_PROJECT_ID=demo-bsm-console BSM_EXPECTED_PROJECT_ID=demo-bsm-console firebase emulators:exec --project demo-bsm-console --only auth,firestore \"tsx --test tests/console-license-expiration.integration.test.mjs\"",
     "test:license:integration": "tsx --test tests/console-license-integration.test.mjs",
