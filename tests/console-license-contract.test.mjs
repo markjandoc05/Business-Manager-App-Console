@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { test } from 'node:test';
-import { buildOrganizationLicenseMirror, canonicalLicensePath, compareOrganizationLicenseMirror, enforcementMirrors, parseCanonicalLicense, resolveCanonicalLicense } from '../lib/license-contract.ts';
+import { buildOrganizationLicenseMirror, canonicalLicensePath, compareOrganizationLicenseMirror, enforcementMirrors, LICENSE_PLAN_CONFIG, parseCanonicalLicense, resolveCanonicalLicense } from '../lib/license-contract.ts';
 import { deriveLicenseAdminState, deriveOrganizationAdminState } from '../lib/server/license-admin-state.ts';
 import { resolveOrganizationLocaleSettingsFromData } from '../lib/server/organization-locale-settings.ts';
 import { loadLicenseMirrorState } from '../lib/license-mirror.ts';
@@ -31,6 +31,10 @@ test('malformed or missing canonical licenses are safe and non-writable', () => 
   assert.equal(parseCanonicalLicense({ ...license('ACTIVE'), subscriptionStartedAt: future, subscriptionEndsAt: past }), null);
   assert.equal(resolveCanonicalLicense(null).canWrite, false);
   assert.equal(resolveCanonicalLicense(null).status, 'UNKNOWN');
+});
+
+test('paid plan defaults are defined once and remain deterministic', () => {
+  assert.deepEqual(LICENSE_PLAN_CONFIG, { SOLO: { maxUsers: 1 }, STARTER: { maxUsers: 3 }, TEAM: { maxUsers: 7 }, LEGACY: { maxUsers: 3 } });
 });
 
 test('the server action resolver distinguishes document state and lifecycle actions', () => {
@@ -255,8 +259,8 @@ test('V1.1E exposes existing-user membership controls, metadata validation, and 
   assert.match(hook, /ARCHIVE_MEMBER/);
   assert.match(hook, /RESTORE_MEMBER/);
   assert.match(hook, /error\.status === 409/);
-  assert.match(dialogs, /Only existing BSM users can be added/);
-  assert.match(dialogs, /does not create or modify a Firebase Authentication account/);
+  assert.match(dialogs, /linked by Firebase UID/);
+  assert.match(dialogs, /pending email assignment/);
   assert.match(dialogs, /Archive Member/);
   assert.match(detail, /Active Users/);
   assert.match(detail, /Available Seats/);
@@ -378,4 +382,27 @@ test('V1.1K responsive Console tables use shared compact accessible controls', (
   assert.match(detail, /CompactIconButton/);
   assert.match(detail, /ARCHIVE_MEMBER/);
   assert.doesNotMatch(detail, /<tr[^>]*onClick/);
+});
+
+test('login activity is displayed from membership data without per-member reads', () => {
+  const readService = fs.readFileSync(new URL('../lib/server/console-read-service.ts', import.meta.url), 'utf8');
+  const detail = fs.readFileSync(new URL('../components/console/OrganizationDetailModule.tsx', import.meta.url), 'utf8');
+  const users = fs.readFileSync(new URL('../components/console/UsersModule.tsx', import.meta.url), 'utf8');
+  const dialogs = fs.readFileSync(new URL('../components/console/OrganizationAdminDialogs.tsx', import.meta.url), 'utf8');
+  const types = fs.readFileSync(new URL('../lib/types.ts', import.meta.url), 'utf8');
+  for (const field of ['lastLoginAt', 'lastLoginStatus', 'lastSuccessfulLoginAt', 'lastFailedLoginAt', 'lastLoginFailureCode']) {
+    assert.match(readService, new RegExp(field));
+    assert.match(types, new RegExp(field));
+  }
+  assert.match(detail, /Last Login/);
+  assert.match(detail, /Login Status/);
+  assert.match(detail, /Successful/);
+  assert.match(detail, /No login yet/);
+  assert.match(users, /lastLoginAt/);
+  assert.match(dialogs, /Last Successful Login/);
+  assert.match(dialogs, /Last Failed Login/);
+  assert.match(dialogs, /Latest Login Status/);
+  assert.match(dialogs, /Failure Reason/);
+  assert.match(readService, /organizationSnapshot\.ref\.collection\('members'\)\.get\(\)/);
+  assert.doesNotMatch(readService, /adminAuth\.getUser/);
 });

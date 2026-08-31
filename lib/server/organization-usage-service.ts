@@ -2,6 +2,7 @@ import { getStorage } from 'firebase-admin/storage';
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { adminDb } from './firebase-admin-core';
 import { ApiError } from './api-errors';
+import { validateOrganizationId } from './request';
 import type { AuthenticatedPlatformAdmin } from './platform-admin';
 import type { OrganizationUsage, OrganizationUsageBreakdown } from '../types';
 import { estimateFirestoreDocumentBytes, summarizeStorageFiles, usageAttentionReason, usageStatus } from '../organization-usage';
@@ -97,12 +98,14 @@ async function calculateUsage(orgId: string, storageLimitBytes: number | null) {
 }
 
 export async function getOrganizationUsage(orgId: string) {
+  validateOrganizationId(orgId);
   const organizationRef = adminDb.collection('organizations').doc(orgId);
   const usageSnapshot = await organizationRef.collection('usage').doc('current').get();
   return storedUsage(usageSnapshot.exists ? usageSnapshot.data() : undefined);
 }
 
 export async function recalculateOrganizationUsage(orgId: string, actor: AuthenticatedPlatformAdmin) {
+  validateOrganizationId(orgId);
   if (actor.role !== 'SUPER_ADMIN') throw new ApiError('UNAUTHORIZED', 'Only SUPER_ADMIN can recalculate organization usage.', 403);
   if (inFlightReconciliations.has(orgId)) throw new ApiError('CONFLICT', 'Usage calculation is already running for this organization.', 409);
   inFlightReconciliations.add(orgId);
@@ -127,6 +130,7 @@ export async function recalculateOrganizationUsage(orgId: string, actor: Authent
 }
 
 export async function setOrganizationStorageLimit(orgId: string, storageLimitBytes: number | null, actor: AuthenticatedPlatformAdmin) {
+  validateOrganizationId(orgId);
   if (actor.role !== 'SUPER_ADMIN') throw new ApiError('UNAUTHORIZED', 'Only SUPER_ADMIN can set organization storage limits.', 403);
   if (storageLimitBytes !== null && (!Number.isInteger(storageLimitBytes) || storageLimitBytes <= 0)) throw new ApiError('INVALID_REQUEST', 'storageLimitBytes must be a positive integer or null.', 400);
   const organizationRef = adminDb.collection('organizations').doc(orgId);

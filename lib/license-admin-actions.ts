@@ -17,7 +17,7 @@ export async function dispatchLicenseAction(orgId: string, action: LicenseAdminA
     case 'EXTEND_TRIAL':
       return extendTrial(orgId, endAt(payload.trialEndsAt));
     case 'CONVERT_TO_PAID':
-      return convertTrialToPaid(orgId, { plan: payload.plan as 'STARTER' | 'TEAM' | 'LEGACY', maxUsers: payload.maxUsers || 1, subscriptionStartedAt: startAt(payload.subscriptionStartedAt), subscriptionEndsAt: endAt(payload.subscriptionEndsAt) });
+      return convertTrialToPaid(orgId, { plan: payload.plan as 'SOLO' | 'STARTER' | 'TEAM' | 'LEGACY', maxUsers: payload.maxUsers || 1, subscriptionStartedAt: startAt(payload.subscriptionStartedAt), subscriptionEndsAt: endAt(payload.subscriptionEndsAt) });
     case 'EXTEND_SUBSCRIPTION':
       return extendSubscription(orgId, endAt(payload.subscriptionEndsAt));
     case 'RENEW':

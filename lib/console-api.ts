@@ -10,11 +10,16 @@ export async function callConsoleAdminApi<T>(path: string, body: unknown = {}, m
   const user = firebaseAuth.currentUser;
   if (!user) throw new ConsoleApiError('UNAUTHENTICATED', 'Your session has expired. Please sign in again.', 401);
   let response: Response;
+  let token: string;
   try {
-    const token = await getIdToken(user);
-    response = await fetch(path, { method, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, ...(method === 'GET' ? {} : { body: JSON.stringify(body) }) });
+    token = await getIdToken(user);
   } catch {
     throw new ConsoleApiError('UNAUTHENTICATED', 'Your session has expired. Please sign in again.', 401);
+  }
+  try {
+    response = await fetch(path, { method, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, ...(method === 'GET' ? {} : { body: JSON.stringify(body) }) });
+  } catch {
+    throw new ConsoleApiError('NETWORK_ERROR', 'Unable to reach the administrative service. Check your connection and try again.', 503);
   }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -30,7 +35,7 @@ export type LicenseMutationResult = { organizationId: string; license: Record<st
 export const activateLicense = (orgId: string, body: { plan: string; maxUsers: number; trialStartedAt?: string; subscriptionStartedAt?: string; endsAt: string }) => callConsoleAdminApi<LicenseMutationResult>(`/api/organizations/${orgId}/license/activate`, body);
 export const renewLicense = (orgId: string, body: { plan?: string; maxUsers?: number; subscriptionStartedAt: string; subscriptionEndsAt: string }) => callConsoleAdminApi<LicenseMutationResult>(`/api/organizations/${orgId}/license/renew`, body);
 export const extendTrial = (orgId: string, trialEndsAt: string) => callConsoleAdminApi<LicenseMutationResult>(`/api/organizations/${orgId}/license/extend-trial`, { trialEndsAt });
-export const convertTrialToPaid = (orgId: string, body: { plan: 'STARTER' | 'TEAM' | 'LEGACY'; maxUsers: number; subscriptionStartedAt: string; subscriptionEndsAt: string }) => callConsoleAdminApi<LicenseMutationResult>(`/api/organizations/${orgId}/license/convert-to-paid`, body);
+export const convertTrialToPaid = (orgId: string, body: { plan: 'SOLO' | 'STARTER' | 'TEAM' | 'LEGACY'; maxUsers: number; subscriptionStartedAt: string; subscriptionEndsAt: string }) => callConsoleAdminApi<LicenseMutationResult>(`/api/organizations/${orgId}/license/convert-to-paid`, body);
 export const extendSubscription = (orgId: string, subscriptionEndsAt: string) => callConsoleAdminApi<LicenseMutationResult>(`/api/organizations/${orgId}/license/extend-subscription`, { subscriptionEndsAt });
 export const changePlan = (orgId: string, plan: string) => callConsoleAdminApi<LicenseMutationResult>(`/api/organizations/${orgId}/license/plan`, { plan }, 'PATCH');
 export const changeSeatLimit = (orgId: string, maxUsers: number) => callConsoleAdminApi<LicenseMutationResult>(`/api/organizations/${orgId}/license/seat-limit`, { maxUsers }, 'PATCH');
@@ -47,7 +52,7 @@ export const updateOrganizationProfile = (orgId: string, body: { name?: string; 
 export const getOrganizationUsage = (orgId: string) => callConsoleAdminApi<OrganizationUsage & { viewerRole: 'SUPER_ADMIN' | 'SUPPORT' }>(`/api/organizations/${orgId}/usage`, {}, 'GET');
 export const recalculateOrganizationUsage = (orgId: string) => callConsoleAdminApi<OrganizationUsage>(`/api/organizations/${orgId}/usage/recalculate`, {});
 export const setOrganizationStorageLimit = (orgId: string, storageLimitBytes: number | null) => callConsoleAdminApi<OrganizationUsage>(`/api/organizations/${orgId}/usage/limit`, { storageLimitBytes }, 'PATCH');
-export type ExistingOrganizationUser = { uid: string; email: string; name: string };
+export type ExistingOrganizationUser = { uid: string | null; email: string; name: string; pendingInvitation: boolean };
 export const lookupOrganizationUser = (orgId: string, email: string) => callConsoleAdminApi<ExistingOrganizationUser>(`/api/organizations/${orgId}/members?email=${encodeURIComponent(email)}`, {}, 'GET');
 export const addOrganizationMember = (orgId: string, body: { email: string; role: OrganizationMemberRole; reason?: string }) => callConsoleAdminApi<Record<string, unknown>>(`/api/organizations/${orgId}/members`, body);
 export const updateOrganizationMember = (orgId: string, uid: string, body: { role?: OrganizationMemberRole; status?: Lowercase<OrganizationMemberStatus>; reason?: string }) => callConsoleAdminApi<Record<string, unknown>>(`/api/organizations/${orgId}/members/${encodeURIComponent(uid)}`, body, 'PATCH');

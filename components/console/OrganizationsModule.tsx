@@ -11,7 +11,7 @@ import { CompactActionGroup, CompactBadge, CompactIconButton, EmptyState, ErrorS
 import { licenseActionLabel } from './LicenseActionDialog';
 
 type OrganizationFilter = 'ALL' | 'ACTION_REQUIRED' | 'NO_LICENSE' | 'INVALID_LICENSE' | 'EXPIRING_SOON' | 'EXPIRED' | 'SUSPENDED' | 'HEALTHY';
-const planLabels: Record<OrganizationPlan, string> = { TRIAL: 'Trial', STARTER: 'Starter', TEAM: 'Team', LEGACY: 'Legacy' };
+const planLabels: Record<string, string> = { TRIAL: 'Trial', SOLO: 'Solo', STARTER: 'Starter', TEAM: 'Team', LEGACY: 'Legacy' };
 
 function reasonLabel(reason?: string) {
   return ({ NO_LICENSE: 'No License', INVALID_LICENSE: 'Invalid License', LICENSE_EXPIRED: 'Renewal Required', LICENSE_EXPIRING_SOON: 'License Expiring Soon', TRIAL_EXPIRING_SOON: 'Trial Expiring Soon', LICENSE_SUSPENDED: 'License Suspended', SEAT_LIMIT_EXCEEDED: 'Seat Limit Exceeded', MISSING_REQUIRED_ORGANIZATION_DATA: 'Missing Required Data', MISSING_TIMEZONE: 'Timezone Not Set', MISSING_CURRENCY: 'Currency Not Set' } as Record<string, string>)[reason || ''] || '—';

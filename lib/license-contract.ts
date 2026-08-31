@@ -1,8 +1,17 @@
-export const LICENSE_PLANS = ['TRIAL', 'STARTER', 'TEAM', 'LEGACY'] as const;
+export const LICENSE_PLANS = ['TRIAL', 'SOLO', 'STARTER', 'TEAM', 'LEGACY'] as const;
 export const LICENSE_STATUSES = ['TRIAL', 'ACTIVE', 'EXPIRED', 'SUSPENDED'] as const;
+
+export const LICENSE_PLAN_CONFIG = {
+  SOLO: { maxUsers: 1 },
+  STARTER: { maxUsers: 3 },
+  TEAM: { maxUsers: 7 },
+  // Preserve the existing configured legacy limit.
+  LEGACY: { maxUsers: 3 },
+} as const;
 
 export type CanonicalLicensePlan = typeof LICENSE_PLANS[number];
 export type CanonicalLicenseStatus = typeof LICENSE_STATUSES[number];
+export type PaidLicensePlan = Exclude<CanonicalLicensePlan, 'TRIAL'>;
 
 export interface CanonicalLicense {
   plan: CanonicalLicensePlan;

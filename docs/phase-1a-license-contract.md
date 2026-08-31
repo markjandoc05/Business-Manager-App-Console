@@ -11,7 +11,7 @@ organizations/{orgId}/license/current
 
 The canonical document fields are:
 
-- `plan`: `TRIAL`, `STARTER`, `TEAM`, or `LEGACY`
+- `plan`: `TRIAL`, `SOLO`, `STARTER`, `TEAM`, or `LEGACY`
 - `status`: `TRIAL`, `ACTIVE`, `EXPIRED`, or `SUSPENDED`
 - `trialStartedAt`, `trialEndsAt`
 - `subscriptionStartedAt`, `subscriptionEndsAt`

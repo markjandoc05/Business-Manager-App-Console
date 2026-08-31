@@ -1,12 +1,11 @@
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { adminDb } from './firebase-admin-core';
 import { ApiError } from './api-errors';
-import { enumValue, integer, isoDate, optionalString, requiredString } from './request';
+import { enumValue, integer, isoDate, optionalString, requiredString, validateOrganizationId } from './request';
 import { AuthenticatedPlatformAdmin } from './platform-admin';
-import { buildOrganizationLicenseMirror, parseCanonicalLicense, resolveCanonicalLicense } from '../license-contract';
+import { buildOrganizationLicenseMirror, LICENSE_PLAN_CONFIG, LICENSE_PLANS, parseCanonicalLicense, resolveCanonicalLicense } from '../license-contract';
 import { deriveLicenseAdminState } from './license-admin-state';
 
-const PLANS = ['TRIAL', 'STARTER', 'TEAM', 'LEGACY'] as const;
 export type LicenseMutationAction = 'activate' | 'repair-license' | 'edit-details' | 'renew' | 'extend-trial' | 'convert-to-paid' | 'extend-subscription' | 'change-plan' | 'change-seat-limit' | 'suspend' | 'expire' | 'reactivate';
 type Action = LicenseMutationAction;
 type LicenseData = Record<string, any>;
@@ -30,7 +29,7 @@ function jsonSafe(value: unknown): unknown {
 function timestampValue(value: unknown) { return value instanceof Timestamp ? value : undefined; }
 
 export async function mutateLicense(orgId: string, action: Action, body: Record<string, unknown>, actor: AuthenticatedPlatformAdmin) {
-  if (!/^[A-Za-z0-9_-]{1,150}$/.test(orgId)) throw new ApiError('INVALID_REQUEST', 'Invalid organization ID.', 400);
+  validateOrganizationId(orgId);
   const organizationRef = adminDb.collection('organizations').doc(orgId);
   const licenseRef = organizationRef.collection('license').doc('current');
   const auditRef = adminDb.collection('platformAuditLogs').doc();
@@ -61,7 +60,7 @@ export async function mutateLicense(orgId: string, action: Action, body: Record<
     }
 
     if (action === 'repair-license') {
-      const plan = enumValue(body.plan, 'plan', PLANS);
+      const plan = enumValue(body.plan, 'plan', LICENSE_PLANS);
       const maxUsers = integer(body.maxUsers, 'maxUsers', 1);
       const reason = requiredString(body, 'reason');
       if (maxUsers < activeMembersSnapshot.size) throw new ApiError('INVALID_REQUEST', 'maxUsers cannot be less than the active member count.', 400);
@@ -82,7 +81,7 @@ export async function mutateLicense(orgId: string, action: Action, body: Record<
       if (unsupported.length) throw new ApiError('INVALID_REQUEST', `Unsupported license correction field: ${unsupported[0]}.`, 400);
       if (!currentLicense) throw new ApiError('CONFLICT', 'Only a valid canonical license can be corrected.', 409);
       requiredString(body, 'reason');
-      const plan = body.plan === undefined ? currentLicense.plan : enumValue(body.plan, 'plan', PLANS);
+      const plan = body.plan === undefined ? currentLicense.plan : enumValue(body.plan, 'plan', LICENSE_PLANS);
       const effectiveCurrentStatus = resolveCanonicalLicense(currentLicense, now.toMillis()).status;
       if (body.plan !== undefined && !['TRIAL', 'ACTIVE'].includes(effectiveCurrentStatus)) throw new ApiError('CONFLICT', 'Plan changes for expired or suspended licenses must use the lifecycle renewal controls.', 409);
       if ((currentLicense.status === 'TRIAL' && plan !== 'TRIAL') || (currentLicense.status === 'ACTIVE' && plan === 'TRIAL')) throw new ApiError('INVALID_REQUEST', 'The selected plan is incompatible with the current license status.', 400);
@@ -107,7 +106,7 @@ export async function mutateLicense(orgId: string, action: Action, body: Record<
         nextLicense.trialStartedAt = null; nextLicense.trialEndsAt = null; nextLicense.subscriptionStartedAt = startValue; nextLicense.subscriptionEndsAt = endValue;
       }
     } else if (action === 'activate') {
-      const plan = enumValue(body.plan, 'plan', PLANS);
+      const plan = enumValue(body.plan, 'plan', LICENSE_PLANS);
       const maxUsers = integer(body.maxUsers, 'maxUsers', 1);
       if (maxUsers < activeMembersSnapshot.size) throw new ApiError('INVALID_REQUEST', 'maxUsers cannot be less than the active member count.', 400);
       const startAt = plan === 'TRIAL' ? undefined : isoDate(body.subscriptionStartedAt, 'subscriptionStartedAt');
@@ -138,14 +137,14 @@ export async function mutateLicense(orgId: string, action: Action, body: Record<
       if (endsAt <= startAt) throw new ApiError('INVALID_REQUEST', 'subscriptionEndsAt must be after subscriptionStartedAt.', 400);
       if (endsAt <= now.toDate()) throw new ApiError('INVALID_REQUEST', 'subscriptionEndsAt must be in the future.', 400);
       if (!['ACTIVE', 'EXPIRED', 'SUSPENDED'].includes(current?.status) || currentLicense?.plan === 'TRIAL') throw new ApiError('CONFLICT', 'Only a paid license can be renewed.', 409);
-      const plan = enumValue(body.plan ?? current?.plan, 'plan', PLANS);
+      const plan = enumValue(body.plan ?? current?.plan, 'plan', LICENSE_PLANS);
       if (plan === 'TRIAL') throw new ApiError('INVALID_REQUEST', 'A renewal requires STARTER, TEAM, or LEGACY.', 400);
       nextLicense.plan = plan;
       nextLicense.status = 'ACTIVE'; nextLicense.maxUsers = maxUsers;
       nextLicense.subscriptionStartedAt = Timestamp.fromDate(startAt); nextLicense.subscriptionEndsAt = Timestamp.fromDate(endsAt);
     } else if (action === 'convert-to-paid') {
       if (!currentLicense || currentLicense.status !== 'TRIAL' || resolveCanonicalLicense(currentLicense, now.toMillis()).status !== 'TRIAL') throw new ApiError('CONFLICT', 'Only a current, unexpired trial can be converted to paid.', 409);
-      const plan = enumValue(body.plan, 'plan', ['STARTER', 'TEAM', 'LEGACY'] as const);
+      const plan = enumValue(body.plan, 'plan', ['SOLO', 'STARTER', 'TEAM', 'LEGACY'] as const);
       const maxUsers = integer(body.maxUsers, 'maxUsers', 1);
       const startAt = isoDate(body.subscriptionStartedAt, 'subscriptionStartedAt');
       const endsAt = isoDate(body.subscriptionEndsAt, 'subscriptionEndsAt');
@@ -172,9 +171,14 @@ export async function mutateLicense(orgId: string, action: Action, body: Record<
       if (!nextLicense.trialStartedAt) nextLicense.trialStartedAt = now;
     } else if (action === 'change-plan') {
       if (!['TRIAL', 'ACTIVE'].includes(current?.status)) throw new ApiError('CONFLICT', 'Only a trial or active license can change plan.', 409);
-      const plan = enumValue(body.plan, 'plan', PLANS);
+      if (body.maxUsers !== undefined) throw new ApiError('INVALID_REQUEST', 'maxUsers is derived from the selected plan and cannot be supplied.', 400);
+      const plan = enumValue(body.plan, 'plan', LICENSE_PLANS);
       if ((current?.status === 'ACTIVE' && plan === 'TRIAL') || (current?.status === 'TRIAL' && plan !== 'TRIAL')) throw new ApiError('INVALID_REQUEST', 'The selected plan is incompatible with the current license status.', 400);
+      if (plan === 'TRIAL') throw new ApiError('INVALID_REQUEST', 'The selected plan is incompatible with the current license status.', 400);
+      const maxUsers = LICENSE_PLAN_CONFIG[plan].maxUsers;
+      if (maxUsers < activeMembersSnapshot.size) throw new ApiError('CONFLICT', `Cannot change to ${plan} while ${activeMembersSnapshot.size} active users are assigned. Reduce active users to ${maxUsers} before changing plans.`, 409);
       nextLicense.plan = plan;
+      nextLicense.maxUsers = maxUsers;
     } else if (action === 'change-seat-limit') {
       const maxUsers = integer(body.maxUsers, 'maxUsers', 1);
       if (maxUsers < activeMembersSnapshot.size) throw new ApiError('INVALID_REQUEST', 'maxUsers cannot be less than the active member count.', 400);

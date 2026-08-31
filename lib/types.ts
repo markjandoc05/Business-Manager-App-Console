@@ -46,7 +46,7 @@ export interface LicenseActionPayload {
   reason?: string;
 }
 
-export type OrganizationPlan = 'TRIAL' | 'STARTER' | 'TEAM' | 'LEGACY';
+export type OrganizationPlan = 'TRIAL' | 'SOLO' | 'STARTER' | 'TEAM' | 'LEGACY';
 
 export type OrganizationUsageStatus = 'NO_LIMIT' | 'NORMAL' | 'WARNING' | 'HIGH' | 'FULL';
 
@@ -121,6 +121,7 @@ export interface Organization {
 
 export type OrganizationMemberRole = 'ADMIN' | 'MANAGER' | 'USER';
 export type OrganizationMemberStatus = 'ACTIVE' | 'PENDING' | 'INACTIVE' | 'SUSPENDED' | 'ARCHIVED' | 'DISABLED';
+export type OrganizationMemberLoginStatus = 'SUCCESS' | 'FAILED';
 
 export type OrganizationAttentionReason =
   | 'NO_LICENSE'
@@ -233,6 +234,11 @@ export interface OrganizationMember {
   status: OrganizationMemberStatus;
   joinedAt?: string;
   lastLogin?: string;
+  lastLoginAt?: string;
+  lastLoginStatus?: OrganizationMemberLoginStatus;
+  lastSuccessfulLoginAt?: string;
+  lastFailedLoginAt?: string;
+  lastLoginFailureCode?: string;
 }
 
 export interface LicenseAdminState {

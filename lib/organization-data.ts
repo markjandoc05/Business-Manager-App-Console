@@ -78,6 +78,11 @@ export async function fetchMembers(orgId: string) {
       status: data.status === 'PENDING' || data.status === 'DISABLED' ? data.status : 'ACTIVE',
       joinedAt: firestoreDate(data.joinedAt || data.createdAt),
       lastLogin: firestoreDate(data.lastLogin),
+      lastLoginAt: firestoreDate(data.lastLoginAt || data.lastLogin),
+      lastLoginStatus: data.lastLoginStatus === 'SUCCESS' || data.lastLoginStatus === 'FAILED' ? data.lastLoginStatus : undefined,
+      lastSuccessfulLoginAt: firestoreDate(data.lastSuccessfulLoginAt),
+      lastFailedLoginAt: firestoreDate(data.lastFailedLoginAt),
+      lastLoginFailureCode: typeof data.lastLoginFailureCode === 'string' ? data.lastLoginFailureCode : undefined,
     } as OrganizationMember;
   });
 }

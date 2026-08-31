@@ -1,7 +1,7 @@
 {
   "firestore": {
     "rules": "firestore.rules",
-    "indexes": "firestore.indexes.json"
+    "indexes": "../Business-Manager-App/firestore.indexes.json"
   },
   "emulators": {
     "auth": {

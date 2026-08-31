@@ -11,7 +11,7 @@ import { getFirestore, Timestamp } from 'firebase-admin/firestore';
 
 const PROJECT_ID = 'bsm-client-app-web';
 const VALID_LIFECYCLE_STATUSES = ['trial', 'active', 'expired', 'suspended'];
-const VALID_LICENSE_PLANS = ['TRIAL', 'STARTER', 'TEAM', 'LEGACY'];
+const VALID_LICENSE_PLANS = ['TRIAL', 'SOLO', 'STARTER', 'TEAM', 'LEGACY'];
 const VALID_LICENSE_STATUSES = ['TRIAL', 'ACTIVE', 'EXPIRED', 'SUSPENDED'];
 
 if (getApps().length === 0) initializeApp({ projectId: PROJECT_ID, credential: applicationDefault() });

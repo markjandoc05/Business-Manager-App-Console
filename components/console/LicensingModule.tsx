@@ -19,7 +19,7 @@ const statusLabels: Record<StatusFilter | 'UNKNOWN', string> = {
   ALL: 'All statuses', ACTIVE: 'Active', TRIAL: 'Trial', EXPIRED: 'Expired', SUSPENDED: 'Suspended', NO_LICENSE: 'No License', NEEDS_ATTENTION: 'Needs Attention', UNKNOWN: 'Needs Attention',
 };
 type OrganizationDocumentStatus = LicenseDocumentState | 'UNKNOWN';
-const planLabels: Record<OrganizationPlan, string> = { TRIAL: 'Trial', STARTER: 'Starter', TEAM: 'Team', LEGACY: 'Legacy' };
+const planLabels: Record<string, string> = { TRIAL: 'Trial', SOLO: 'Solo', STARTER: 'Starter', TEAM: 'Team', LEGACY: 'Legacy' };
 
 function documentStatus(org: Organization): OrganizationDocumentStatus {
   return org.licenseDocumentState || 'UNKNOWN';

@@ -78,7 +78,7 @@ export async function getDashboardMetrics(now = Date.now()): Promise<DashboardMe
     invalid: rows.filter((row) => row.licenseAdminState.documentState === 'INVALID_LICENSE').length,
     noLicense: rows.filter((row) => row.licenseAdminState.documentState === 'NO_LICENSE').length,
   };
-  const planDistribution = { TRIAL: 0, STARTER: 0, TEAM: 0, LEGACY: 0 };
+  const planDistribution = { TRIAL: 0, SOLO: 0, STARTER: 0, TEAM: 0, LEGACY: 0 };
   for (const row of rows) if (row.licenseAdminState.plan) planDistribution[row.licenseAdminState.plan] += 1;
 
   const upcomingLicenseActions = rows

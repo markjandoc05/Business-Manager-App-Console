@@ -12,7 +12,7 @@
 
 ## Licensing and platform contract
 
-Canonical license plans: `TRIAL`, `STARTER`, `TEAM`, `LEGACY`.
+Canonical license plans: `TRIAL`, `SOLO`, `STARTER`, `TEAM`, `LEGACY`.
 
 Canonical license statuses: `TRIAL`, `ACTIVE`, `SUSPENDED`, `EXPIRED`.
 

@@ -1,7 +1,8 @@
+import { createHash } from 'node:crypto';
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminAuth, adminDb } from './firebase-admin-core';
 import { ApiError } from './api-errors';
-import { optionalString, requiredString } from './request';
+import { optionalString, requiredString, validateOrganizationId } from './request';
 import type { AuthenticatedPlatformAdmin } from './platform-admin';
 import { parseCanonicalLicense } from '../license-contract';
 import { resolveOrganizationLocaleSettingsFromData } from './organization-locale-settings';
@@ -12,6 +13,15 @@ const MEMBER_STATUSES = ['active', 'pending', 'inactive', 'suspended', 'archived
 const CURRENCY_CODES = new Set((Intl as unknown as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf?.('currency') || []);
 const LICENSE_CONFIGURATION_ERROR = 'Organization licensing is not configured correctly. Repair the license before adding or activating users.';
 const SEAT_LIMIT_ERROR = 'This organization has reached its active user limit.';
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function normalizeEmail(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function invitationId(organizationId: string, email: string) {
+  return createHash('sha256').update(`${organizationId}\0${normalizeEmail(email)}`).digest('hex');
+}
 
 function jsonSafe(value: unknown): unknown {
   if (value && typeof value === 'object' && 'toDate' in value && typeof value.toDate === 'function') return value.toDate().toISOString();
@@ -47,6 +57,7 @@ function enforceActiveSeatAvailability(licenseData: Record<string, unknown> | un
 }
 
 export async function updateOrganizationProfile(orgId: string, body: Record<string, unknown>, actor: AuthenticatedPlatformAdmin) {
+  validateOrganizationId(orgId);
   rejectUnknownFields(body, [...PROFILE_FIELDS, 'reason']);
   const changedFields = PROFILE_FIELDS.filter((field) => body[field] !== undefined);
   if (!changedFields.length) throw new ApiError('INVALID_REQUEST', 'At least one organization profile field is required.', 400);
@@ -93,6 +104,7 @@ export async function updateOrganizationProfile(orgId: string, body: Record<stri
 }
 
 export async function updateOrganizationMember(orgId: string, memberUid: string, body: Record<string, unknown>, actor: AuthenticatedPlatformAdmin) {
+  validateOrganizationId(orgId);
   rejectUnknownFields(body, ['role', 'status', 'reason']);
   if (body.role === undefined && body.status === undefined) throw new ApiError('INVALID_REQUEST', 'A role or status change is required.', 400);
   const nextRole = body.role === undefined ? undefined : typeof body.role === 'string' && MEMBER_ROLES.includes(body.role as never) ? body.role : null;
@@ -137,42 +149,103 @@ export async function updateOrganizationMember(orgId: string, memberUid: string,
 }
 
 export async function lookupExistingOrganizationUser(orgId: string, email: string) {
-  if (!email.trim()) throw new ApiError('INVALID_REQUEST', 'email is required.', 400);
+  validateOrganizationId(orgId);
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) throw new ApiError('INVALID_REQUEST', 'email is required.', 400);
+  if (!EMAIL_PATTERN.test(normalizedEmail)) throw new ApiError('INVALID_REQUEST', 'Enter a valid email address.', 400);
   const organizationSnapshot = await adminDb.collection('organizations').doc(orgId).get();
   if (!organizationSnapshot.exists) throw new ApiError('NOT_FOUND', 'Organization not found.', 404);
   let authUser;
-  try { authUser = await adminAuth.getUserByEmail(email.trim()); } catch { throw new ApiError('NOT_FOUND', 'This user does not yet have a BSM account. Ask the user to sign in or register first before adding them to this organization.', 404); }
+  try { authUser = await adminAuth.getUserByEmail(normalizedEmail); } catch {
+    return { uid: null, email: normalizedEmail, name: '', pendingInvitation: true };
+  }
   const userSnapshot = await adminDb.collection('users').doc(authUser.uid).get();
   const userData = userSnapshot.data() || {};
-  return { uid: authUser.uid, email: authUser.email || email.trim(), name: typeof userData.displayName === 'string' ? userData.displayName : authUser.displayName || '' };
+  return { uid: authUser.uid, email: authUser.email || normalizedEmail, name: typeof userData.displayName === 'string' ? userData.displayName : authUser.displayName || '', pendingInvitation: false };
+}
+
+async function addPendingOrganizationInvitation(orgId: string, email: string, role: typeof MEMBER_ROLES[number], actor: AuthenticatedPlatformAdmin) {
+  const normalizedEmail = normalizeEmail(email);
+  const organizationRef = adminDb.collection('organizations').doc(orgId);
+  const membersRef = organizationRef.collection('members');
+  const invitationRef = adminDb.collection('organizationInvitations').doc(invitationId(orgId, normalizedEmail));
+  const auditRef = adminDb.collection('platformAuditLogs').doc();
+  return adminDb.runTransaction(async (transaction) => {
+    const organizationSnapshot = await transaction.get(organizationRef);
+    const membersSnapshot = await transaction.get(membersRef);
+    const invitationSnapshot = await transaction.get(invitationRef);
+    if (!organizationSnapshot.exists) throw new ApiError('NOT_FOUND', 'Organization not found.', 404);
+    if (membersSnapshot.docs.some((item) => normalizeEmail(typeof item.data().email === 'string' ? item.data().email : '') === normalizedEmail)) throw new ApiError('CONFLICT', 'This user is already a member of the organization.', 409);
+    if (invitationSnapshot.exists && invitationSnapshot.data()?.status === 'pending') throw new ApiError('CONFLICT', 'A pending invitation already exists for this email.', 409);
+    const now = FieldValue.serverTimestamp();
+    transaction.set(invitationRef, {
+      organizationId: orgId,
+      email: normalizedEmail,
+      emailNormalized: normalizedEmail,
+      role,
+      status: 'pending',
+      source: 'CONSOLE',
+      createdAt: now,
+      createdBy: actor.uid,
+      updatedAt: now,
+    });
+    transaction.set(auditRef, {
+      action: 'ORGANIZATION_MEMBER_INVITED', actorUid: actor.uid, actorEmail: actor.email, actorRole: actor.role,
+      targetType: 'ORGANIZATION_INVITATION', targetId: invitationRef.id, targetEmail: normalizedEmail, organizationId: orgId,
+      previousValue: null, newValue: { email: normalizedEmail, role, status: 'pending' }, metadata: {}, createdAt: now,
+    });
+    return { organizationId: orgId, invitation: { id: invitationRef.id, email: normalizedEmail, role, status: 'pending' }, auditLogId: auditRef.id };
+  });
 }
 
 export async function addOrganizationMember(orgId: string, body: Record<string, unknown>, actor: AuthenticatedPlatformAdmin) {
+  validateOrganizationId(orgId);
   rejectUnknownFields(body, ['email', 'role', 'reason']);
   const email = requiredString(body, 'email');
+  if (!EMAIL_PATTERN.test(normalizeEmail(email))) throw new ApiError('INVALID_REQUEST', 'Enter a valid email address.', 400);
   const role = typeof body.role === 'string' && MEMBER_ROLES.includes(body.role as never) ? body.role as typeof MEMBER_ROLES[number] : null;
   if (!role) throw new ApiError('INVALID_REQUEST', 'role must be ADMIN, MANAGER, or USER.', 400);
   const existingUser = await lookupExistingOrganizationUser(orgId, email);
+  if (existingUser.pendingInvitation) return addPendingOrganizationInvitation(orgId, existingUser.email, role, actor);
+  if (!existingUser.uid) throw new ApiError('NOT_FOUND', 'Existing BSM user identity could not be resolved.', 404);
+  const existingUserUid = existingUser.uid;
   const organizationRef = adminDb.collection('organizations').doc(orgId);
   const licenseRef = organizationRef.collection('license').doc('current');
-  const memberRef = organizationRef.collection('members').doc(existingUser.uid);
+  const memberRef = organizationRef.collection('members').doc(existingUserUid);
+  const userRef = adminDb.collection('users').doc(existingUserUid);
   const auditRef = adminDb.collection('platformAuditLogs').doc();
   return adminDb.runTransaction(async (transaction) => {
     const organizationSnapshot = await transaction.get(organizationRef);
     const licenseSnapshot = await transaction.get(licenseRef);
     const memberSnapshot = await transaction.get(memberRef);
     const membersSnapshot = await transaction.get(organizationRef.collection('members'));
+    const userSnapshot = await transaction.get(userRef);
     if (!organizationSnapshot.exists) throw new ApiError('NOT_FOUND', 'Organization not found.', 404);
-    if (memberSnapshot.exists || membersSnapshot.docs.some((item) => item.data().userId === existingUser.uid)) throw new ApiError('CONFLICT', 'This user is already a member of the organization.', 409);
+    if (memberSnapshot.exists || membersSnapshot.docs.some((item) => item.data().userId === existingUserUid)) throw new ApiError('CONFLICT', 'This user is already a member of the organization.', 409);
+    const currentUser = userSnapshot.data() || {};
+    if (userSnapshot.exists && ['inactive', 'disabled'].includes(String(currentUser.status))) {
+      throw new ApiError('CONFLICT', 'This user account is inactive or disabled. Reactivate the account before adding organization access.', 409);
+    }
     const activeMembers = membersSnapshot.docs.filter((item) => item.data().status === 'active').length;
     enforceActiveSeatAvailability(licenseSnapshot.exists ? licenseSnapshot.data() || {} : undefined, activeMembers);
     const now = FieldValue.serverTimestamp();
-    transaction.set(memberRef, { userId: existingUser.uid, email: existingUser.email, name: existingUser.name, role, status: 'active', joinedAt: now, createdAt: now, updatedAt: now, updatedBy: actor.uid });
+    transaction.set(userRef, {
+      uid: existingUserUid,
+      name: existingUser.name || existingUser.email,
+      email: existingUser.email,
+      displayName: existingUser.name || existingUser.email,
+      photoURL: typeof currentUser.photoURL === 'string' ? currentUser.photoURL : '',
+      role: currentUser.role === 'ADMIN' || currentUser.role === 'MANAGER' || currentUser.role === 'USER' ? currentUser.role : 'USER',
+      status: 'active',
+      active: true,
+      ...(userSnapshot.exists ? {} : { createdAt: now }),
+    }, { merge: true });
+    transaction.set(memberRef, { userId: existingUserUid, email: existingUser.email, name: existingUser.name, displayName: existingUser.name, role, status: 'active', joinedAt: now, createdAt: now, updatedAt: now, updatedBy: actor.uid });
     transaction.set(auditRef, {
       action: 'ORGANIZATION_MEMBER_ADDED', actorUid: actor.uid, actorEmail: actor.email, actorRole: actor.role,
-      targetType: 'ORGANIZATION_MEMBER', targetId: existingUser.uid, targetUid: existingUser.uid, targetEmail: existingUser.email, organizationId: orgId,
-      previousValue: null, newValue: { userId: existingUser.uid, email: existingUser.email, role, status: 'active' }, metadata: optionalString(body, 'reason') ? { reason: optionalString(body, 'reason') } : {}, createdAt: now,
+      targetType: 'ORGANIZATION_MEMBER', targetId: existingUserUid, targetUid: existingUserUid, targetEmail: existingUser.email, organizationId: orgId,
+      previousValue: null, newValue: { userId: existingUserUid, email: existingUser.email, role, status: 'active' }, metadata: optionalString(body, 'reason') ? { reason: optionalString(body, 'reason') } : {}, createdAt: now,
     });
-    return { organizationId: orgId, member: { uid: existingUser.uid, email: existingUser.email, name: existingUser.name, role, status: 'active' }, auditLogId: auditRef.id };
+    return { organizationId: orgId, member: { uid: existingUserUid, email: existingUser.email, name: existingUser.name, role, status: 'active' }, auditLogId: auditRef.id };
   });
 }

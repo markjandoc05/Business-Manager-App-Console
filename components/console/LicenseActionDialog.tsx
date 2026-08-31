@@ -7,7 +7,7 @@ export type LicenseAction = LicenseAdminAction;
 export type { LicenseActionPayload } from '@/lib/types';
 
 const labels: Record<LicenseAction, string> = { ACTIVATE: 'Activate Organization', REPAIR_LICENSE: 'Repair License', EDIT_LICENSE_DETAILS: 'Edit License Details', EXTEND_TRIAL: 'Extend Trial', CONVERT_TO_PAID: 'Convert to Paid', EXTEND_SUBSCRIPTION: 'Extend Subscription', RENEW: 'Renew Subscription', CHANGE_PLAN: 'Change Plan', CHANGE_SEAT_LIMIT: 'Change User Limit', SUSPEND: 'Suspend Organization', EXPIRE: 'Mark Expired', REACTIVATE: 'Reactivate Organization' };
-const paidPlans: OrganizationPlan[] = ['STARTER', 'TEAM', 'LEGACY'];
+const paidPlans: OrganizationPlan[] = ['SOLO', 'STARTER', 'TEAM', 'LEGACY'];
 function dateOnly(value?: string) { return value ? value.slice(0, 10) : ''; }
 export function licenseActionLabel(action: LicenseAction) { return labels[action]; }
 

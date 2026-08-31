@@ -3,6 +3,7 @@ import { adminDb } from './firebase-admin-core';
 import { parseCanonicalLicense, resolveCanonicalLicense } from '../license-contract';
 import { deriveLicenseAdminState, deriveOrganizationAdminState } from './license-admin-state';
 import { resolveOrganizationLocaleSettings } from './organization-locale-settings';
+import { validateOrganizationId } from './request';
 import type { OrganizationMemberStatus } from '../types';
 
 function safeDate(value: unknown): string | undefined {
@@ -28,6 +29,10 @@ function memberStatus(value: unknown): OrganizationMemberStatus {
     case 'disabled': return 'DISABLED';
     default: return 'ACTIVE';
   }
+}
+
+function memberLoginStatus(value: unknown): 'SUCCESS' | 'FAILED' | undefined {
+  return value === 'SUCCESS' || value === 'FAILED' ? value : undefined;
 }
 
 function licenseView(raw: Record<string, unknown> | undefined, now = Date.now()) {
@@ -89,6 +94,7 @@ export async function listConsoleOrganizations() {
 }
 
 export async function getConsoleOrganization(orgId: string) {
+  validateOrganizationId(orgId);
   const organizationSnapshot = await adminDb.collection('organizations').doc(orgId).get();
   if (!organizationSnapshot.exists) return null;
   const organization = await organizationView(organizationSnapshot);
@@ -104,6 +110,11 @@ export async function getConsoleOrganization(orgId: string) {
       status: memberStatus(data.status),
       joinedAt: safeDate(data.joinedAt || data.createdAt),
       lastLogin: safeDate(data.lastLogin),
+      lastLoginAt: safeDate(data.lastLoginAt || data.lastLogin),
+      lastLoginStatus: memberLoginStatus(data.lastLoginStatus),
+      lastSuccessfulLoginAt: safeDate(data.lastSuccessfulLoginAt),
+      lastFailedLoginAt: safeDate(data.lastFailedLoginAt),
+      lastLoginFailureCode: typeof data.lastLoginFailureCode === 'string' ? data.lastLoginFailureCode : undefined,
     };
   });
   return { organization, members };
@@ -131,6 +142,12 @@ export async function listConsoleMemberships() {
         activeMemberCount: view.activeMemberCount,
         maxUsers: view.licenseAdminState?.maxUsers,
         joinedAt: safeDate(data.joinedAt || data.createdAt),
+        lastLogin: safeDate(data.lastLogin),
+        lastLoginAt: safeDate(data.lastLoginAt || data.lastLogin),
+        lastLoginStatus: memberLoginStatus(data.lastLoginStatus),
+        lastSuccessfulLoginAt: safeDate(data.lastSuccessfulLoginAt),
+        lastFailedLoginAt: safeDate(data.lastFailedLoginAt),
+        lastLoginFailureCode: typeof data.lastLoginFailureCode === 'string' ? data.lastLoginFailureCode : undefined,
       };
     });
   }));
