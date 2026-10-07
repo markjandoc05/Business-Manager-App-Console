@@ -37,6 +37,17 @@ test('license drift reports root lifecycle; expired trials remain unable to conv
  await assert.rejects(()=>service.mutateLicense('org','convert-to-paid',{},f.actor),e=>e.status===409);
  f.records.set(`${p}/license/current`,license);f.records.set(p,{status:'archived'});await assert.rejects(()=>service.mutateLicense('org','suspend',{},f.actor),e=>e.status===409);assert.equal(f.records.get(p).status,'archived');
 });
+test('invalid license repair succeeds for known root lifecycle and missing lifecycle rejects without writes',async()=>{
+ const body={plan:'TEAM',maxUsers:3,subscriptionStartedAt:new Date(Date.now()-1000).toISOString(),subscriptionEndsAt:future().toDate().toISOString(),reason:'Synthetic canonical license repair'};
+ for(const knownRoot of [true,false]){
+  const f=consoleFixture();const p=seed(f);f.records.set(p,{name:'Synthetic',...(knownRoot?{status:'active'}:{}),unchanged:'history'});const invalid={plan:'TEAM',status:'ACTIVE'};f.records.set(`${p}/license/current`,invalid);
+  const service=f.load('lib/server/license-service.ts');
+  if(!knownRoot){await assert.rejects(()=>service.mutateLicense('org','repair-license',body,f.actor),e=>e.status===409);assert.deepEqual(f.records.get(`${p}/license/current`),invalid);assert.equal(f.records.get(p).status,undefined);assert.equal([...f.records.keys()].filter(k=>k.startsWith('platformAuditLogs/')).length,0);continue;}
+  await service.mutateLicense('org','repair-license',body,f.actor);assert.equal(f.records.get(p).status,'active');assert.equal(f.records.get(p).unchanged,'history');assert.equal(f.records.get(`${p}/license/current`).maxUsers,3);
+  const audits=[...f.records].filter(([k])=>k.startsWith('platformAuditLogs/'));assert.equal(audits.length,1);assert.equal(audits[0][1].action,'ORGANIZATION_LICENSE_REPAIRED');
+  await service.mutateLicense('org','edit-details',{maxUsers:4,reason:'Synthetic seat correction'},f.actor);assert.equal(f.records.get(`${p}/license/current`).maxUsers,4);assert.equal(f.records.get(p).status,'active');
+ }
+});
 test('usage reconciliation preserves a changed or cleared limit through the actual setter, returned/stored data and its audit',async()=>{
  for(const limit of [200,null]){
   const f=consoleFixture({environment:{FIREBASE_STORAGE_BUCKET:'synthetic-bucket'}});f.records.set('organizations/org',{name:'Synthetic'});f.records.set('organizations/org/usage/current',{storageLimitBytes:100,retained:'metadata'});f.storageFiles.push({metadata:{size:'20'}});

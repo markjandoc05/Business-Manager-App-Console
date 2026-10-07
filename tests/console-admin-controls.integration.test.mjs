@@ -34,7 +34,7 @@ async function auditCount(orgId) { return (await adminDb.collection('platformAud
 async function seedInvalid(label, memberCount = 1) {
   const orgId = `admin-controls-${label}-${suffix}`;
   const ref = adminDb.collection('organizations').doc(orgId);
-  await ref.set({ name: `${label} Organization` });
+  await ref.set({ name: `${label} Organization`, status: 'active' });
   await ref.collection('license').doc('current').set({ plan: 'TEAM', status: 'ACTIVE' });
   for (let index = 0; index < memberCount; index += 1) await ref.collection('members').doc(`${label}-member-${index}`).set({ userId: `${label}-member-${index}`, role: index === 0 ? 'ADMIN' : 'USER', status: 'active' });
   return { orgId, ref, licenseRef: ref.collection('license').doc('current') };
@@ -102,7 +102,7 @@ test('organization profile and member controls preserve tenant boundaries, seats
   const ref = adminDb.collection('organizations').doc(orgId);
   const adminUid = `admin-${suffix}`;
   const pendingUid = `pending-${suffix}`;
-  await ref.set({ name: 'Member Control Organization', businessType: 'SMB' });
+  await ref.set({ name: 'Member Control Organization', businessType: 'SMB', status: 'active' });
   await ref.collection('license').doc('current').set({ plan: 'TEAM', status: 'ACTIVE', maxUsers: 1, subscriptionStartedAt: new Date(), subscriptionEndsAt: new Date(Date.now() + 365 * 86_400_000), features: { crm: true } });
   await ref.collection('members').doc(adminUid).set({ userId: adminUid, role: 'ADMIN', status: 'active' });
   await ref.collection('members').doc(pendingUid).set({ userId: pendingUid, role: 'USER', status: 'pending' });
