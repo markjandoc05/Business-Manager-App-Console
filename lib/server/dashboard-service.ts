@@ -1,10 +1,10 @@
+import { mapConsoleReads, readCollectionPages } from './bounded-console-reads';
 import { adminDb } from './firebase-admin-core';
 import { deriveLicenseAdminState, deriveOrganizationAdminState } from './license-admin-state';
 import { resolveOrganizationLocaleSettingsFromData } from './organization-locale-settings';
 import { storedUsage } from './organization-usage-service';
 import { usageAttentionReason } from '../organization-usage';
-import { mapConsoleReads, readCollectionPages } from './bounded-console-reads';
-import { auditDetail, attentionPriority, attentionReasonLabels, humanizeAuditAction, primaryDashboardAction, seatUtilization as calculateSeatUtilization } from '../dashboard-model';
+import { attentionPriority, attentionReasonLabels, humanizeAuditAction, primaryDashboardAction, seatUtilization as calculateSeatUtilization } from '../dashboard-model';
 import type { DashboardActivityItem, DashboardAttentionItem, DashboardMetrics, DashboardSeatUtilizationItem, DashboardUpcomingLicenseAction, OrganizationAttentionReason } from '../types';
 
 const SOON_DAYS = 30;
@@ -13,13 +13,6 @@ function safeDate(value: unknown): string | undefined {
   if (typeof value === 'string') return value;
   if (value && typeof value === 'object' && 'toDate' in value && typeof value.toDate === 'function') return value.toDate().toISOString();
   if (value instanceof Date) return value.toISOString();
-  return undefined;
-}
-
-function safeAuditValue(value: unknown): unknown {
-  if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
-  if (Array.isArray(value)) return value.map(safeAuditValue);
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, safeAuditValue(item)]));
   return undefined;
 }
 
@@ -100,7 +93,7 @@ export async function getDashboardMetrics(now = Date.now()): Promise<DashboardMe
   const recentActivity: DashboardActivityItem[] = auditSnapshot.docs.map((item) => {
     const data = item.data();
     const organizationId = typeof data.organizationId === 'string' ? data.organizationId : undefined;
-    return { id: item.id, action: typeof data.action === 'string' ? data.action : undefined, title: humanizeAuditAction(typeof data.action === 'string' ? data.action : undefined), actorName: typeof data.actorName === 'string' && data.actorName ? data.actorName : typeof data.actorEmail === 'string' && data.actorEmail ? data.actorEmail : 'Platform administrator', actorEmail: typeof data.actorEmail === 'string' ? data.actorEmail : undefined, organizationId, organizationName: organizationId ? organizationNames.get(organizationId) : undefined, detail: auditDetail(safeAuditValue(data.previousValue), safeAuditValue(data.newValue)), createdAt: safeDate(data.createdAt) };
+    return { id: item.id, action: typeof data.action === 'string' ? data.action : undefined, title: humanizeAuditAction(typeof data.action === 'string' ? data.action : undefined), actorName: typeof data.actorRole === 'string' && data.actorRole ? data.actorRole.replaceAll('_', ' ') : 'Platform service', organizationId, organizationName: organizationId ? organizationNames.get(organizationId) || 'Organization record' : undefined, createdAt: safeDate(data.createdAt) };
   });
 
   return {

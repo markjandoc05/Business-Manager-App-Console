@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminAuth, adminDb } from './firebase-admin-core';
 import { ApiError } from './api-errors';
-import { optionalString, requiredString, validateOrganizationId } from './request';
+import { assertActiveClientProfile } from './client-organization-auth';
+import { requiredString, validateOrganizationId } from './request';
 import type { AuthenticatedPlatformAdmin } from './platform-admin';
 import { parseCanonicalLicense } from '../license-contract';
 import { resolveOrganizationLocaleSettingsFromData } from './organization-locale-settings';
@@ -95,9 +96,10 @@ export async function updateOrganizationProfile(orgId: string, body: Record<stri
     transaction.set(settingsRef, settingsUpdate, { merge: true });
     const auditAction = changedFields.length === 1 && changedFields[0] === 'timezone' ? 'ORGANIZATION_TIMEZONE_UPDATED' : changedFields.length === 1 && changedFields[0] === 'currency' ? 'ORGANIZATION_CURRENCY_UPDATED' : 'ORGANIZATION_PROFILE_UPDATED';
     transaction.set(auditRef, {
-      action: auditAction, actorUid: actor.uid, actorEmail: actor.email, actorRole: actor.role,
+      action: auditAction, actorUid: actor.uid, actorRole: actor.role,
       targetType: 'ORGANIZATION', targetId: orgId, organizationId: orgId,
-      previousValue: jsonSafe(before), newValue: jsonSafe(next), metadata: optionalString(body, 'reason') ? { reason: optionalString(body, 'reason') } : {}, createdAt: FieldValue.serverTimestamp(),
+      metadata: { changedFields },
+      createdAt: FieldValue.serverTimestamp(),
     });
     return { organizationId: orgId, before: jsonSafe(before), after: jsonSafe(next), auditLogId: auditRef.id };
   });
@@ -140,9 +142,10 @@ export async function updateOrganizationMember(orgId: string, memberUid: string,
     transaction.set(memberSnapshot.ref, { role: resolvedRole, status: resolvedStatus, updatedAt: FieldValue.serverTimestamp(), updatedBy: actor.uid }, { merge: true });
     const auditAction = nextRole !== undefined && nextRole !== currentRole ? 'ORGANIZATION_MEMBER_ROLE_CHANGED' : resolvedStatus === 'suspended' ? 'ORGANIZATION_MEMBER_SUSPENDED' : currentStatus === 'suspended' && resolvedStatus === 'active' ? 'ORGANIZATION_MEMBER_REACTIVATED' : resolvedStatus === 'archived' ? 'ORGANIZATION_MEMBER_ARCHIVED' : currentStatus === 'archived' && resolvedStatus === 'active' ? 'ORGANIZATION_MEMBER_RESTORED' : 'ORGANIZATION_MEMBER_STATUS_CHANGED';
     transaction.set(auditRef, {
-      action: auditAction, actorUid: actor.uid, actorEmail: actor.email, actorRole: actor.role,
-      targetType: 'ORGANIZATION_MEMBER', targetId: memberUid, targetUid: memberUid, targetEmail: typeof currentData.email === 'string' ? currentData.email : null, organizationId: orgId,
-      previousValue: before, newValue: after, metadata: optionalString(body, 'reason') ? { reason: optionalString(body, 'reason') } : {}, createdAt: FieldValue.serverTimestamp(),
+      action: auditAction, actorUid: actor.uid, actorRole: actor.role,
+      targetType: 'ORGANIZATION_MEMBER', targetId: memberUid, targetUid: memberUid, organizationId: orgId,
+      metadata: { role: resolvedRole, status: resolvedStatus },
+      createdAt: FieldValue.serverTimestamp(),
     });
     return { organizationId: orgId, memberUid, before, after, auditLogId: auditRef.id };
   });
@@ -159,6 +162,7 @@ export async function lookupExistingOrganizationUser(orgId: string, email: strin
   try { authUser = await adminAuth.getUserByEmail(normalizedEmail); } catch {
     return { uid: null, email: normalizedEmail, name: '', pendingInvitation: true };
   }
+  if (authUser.disabled) throw new ApiError('CONFLICT', 'This user account is disabled. Reactivate the account before adding organization access.', 409);
   const userSnapshot = await adminDb.collection('users').doc(authUser.uid).get();
   const userData = userSnapshot.data() || {};
   return { uid: authUser.uid, email: authUser.email || normalizedEmail, name: typeof userData.displayName === 'string' ? userData.displayName : authUser.displayName || '', pendingInvitation: false };
@@ -190,9 +194,10 @@ async function addPendingOrganizationInvitation(orgId: string, email: string, ro
       updatedAt: now,
     });
     transaction.set(auditRef, {
-      action: 'ORGANIZATION_MEMBER_INVITED', actorUid: actor.uid, actorEmail: actor.email, actorRole: actor.role,
-      targetType: 'ORGANIZATION_INVITATION', targetId: invitationRef.id, targetEmail: normalizedEmail, organizationId: orgId,
-      previousValue: null, newValue: { email: normalizedEmail, role, status: 'pending' }, metadata: {}, createdAt: now,
+      action: 'ORGANIZATION_MEMBER_INVITED', actorUid: actor.uid, actorRole: actor.role,
+      targetType: 'ORGANIZATION_INVITATION', targetId: invitationRef.id, organizationId: orgId,
+      metadata: { role, status: 'pending' },
+      createdAt: now,
     });
     return { organizationId: orgId, invitation: { id: invitationRef.id, email: normalizedEmail, role, status: 'pending' }, auditLogId: auditRef.id };
   });
@@ -223,8 +228,16 @@ export async function addOrganizationMember(orgId: string, body: Record<string, 
     if (!organizationSnapshot.exists) throw new ApiError('NOT_FOUND', 'Organization not found.', 404);
     if (memberSnapshot.exists || membersSnapshot.docs.some((item) => item.data().userId === existingUserUid)) throw new ApiError('CONFLICT', 'This user is already a member of the organization.', 409);
     const currentUser = userSnapshot.data() || {};
-    if (userSnapshot.exists && ['inactive', 'disabled'].includes(String(currentUser.status))) {
-      throw new ApiError('CONFLICT', 'This user account is inactive or disabled. Reactivate the account before adding organization access.', 409);
+    let newAccount = false;
+    if (!userSnapshot.exists || (currentUser.uid === existingUserUid && currentUser.status === 'pending' && currentUser.active === false)) {
+      const [priorMembership, priorBootstrap] = await Promise.all([
+        transaction.get(adminDb.collectionGroup('members').where('userId', '==', existingUserUid).limit(1)),
+        transaction.get(adminDb.collection('workspaceBootstrap').doc(existingUserUid)),
+      ]);
+      newAccount = priorMembership.empty && !priorBootstrap.exists;
+    }
+    try { assertActiveClientProfile(existingUserUid, currentUser, userSnapshot.exists, newAccount, newAccount); } catch {
+      throw new ApiError('CONFLICT', 'This user account is not active. Reactivate the account before adding organization access.', 409);
     }
     const activeMembers = membersSnapshot.docs.filter((item) => item.data().status === 'active').length;
     enforceActiveSeatAvailability(licenseSnapshot.exists ? licenseSnapshot.data() || {} : undefined, activeMembers);
@@ -242,9 +255,10 @@ export async function addOrganizationMember(orgId: string, body: Record<string, 
     }, { merge: true });
     transaction.set(memberRef, { userId: existingUserUid, email: existingUser.email, name: existingUser.name, displayName: existingUser.name, role, status: 'active', joinedAt: now, createdAt: now, updatedAt: now, updatedBy: actor.uid });
     transaction.set(auditRef, {
-      action: 'ORGANIZATION_MEMBER_ADDED', actorUid: actor.uid, actorEmail: actor.email, actorRole: actor.role,
-      targetType: 'ORGANIZATION_MEMBER', targetId: existingUserUid, targetUid: existingUserUid, targetEmail: existingUser.email, organizationId: orgId,
-      previousValue: null, newValue: { userId: existingUserUid, email: existingUser.email, role, status: 'active' }, metadata: optionalString(body, 'reason') ? { reason: optionalString(body, 'reason') } : {}, createdAt: now,
+      action: 'ORGANIZATION_MEMBER_ADDED', actorUid: actor.uid, actorRole: actor.role,
+      targetType: 'ORGANIZATION_MEMBER', targetId: existingUserUid, targetUid: existingUserUid, organizationId: orgId,
+      metadata: { role, status: 'active' },
+      createdAt: now,
     });
     return { organizationId: orgId, member: { uid: existingUserUid, email: existingUser.email, name: existingUser.name, role, status: 'active' }, auditLogId: auditRef.id };
   });

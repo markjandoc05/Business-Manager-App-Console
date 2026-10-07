@@ -140,7 +140,23 @@ export async function recalculateOrganizationUsage(orgId: string, actor: Authent
       const storageLimitBytes = typeof currentUsage.storageLimitBytes === 'number' && Number.isFinite(currentUsage.storageLimitBytes) && currentUsage.storageLimitBytes > 0 ? currentUsage.storageLimitBytes : null;
       const writeData = { ...currentUsage, storageAvailable: calculated.storageAvailable, usageCoverage: calculated.usageCoverage, storageBytes: calculated.storageBytes, firestoreBytesEstimated: calculated.firestoreBytesEstimated, totalBytesEstimated: calculated.totalBytesEstimated, fileCount: calculated.fileCount, recordCount: calculated.recordCount, breakdown: calculated.breakdown, storageLimitBytes, lastCalculatedAt: calculated._timestamp, lastReconciledAt: calculated._timestamp, updatedAt: FieldValue.serverTimestamp(), updatedBy: actor.uid };
       transaction.set(usageRef, writeData);
-      transaction.set(auditRef, { action: 'ORGANIZATION_USAGE_RECALCULATED', actorUid: actor.uid, actorEmail: actor.email, actorRole: actor.role, targetType: 'ORGANIZATION_USAGE', targetId: orgId, organizationId: orgId, previousValue: currentUsageSnapshot.exists ? currentUsageSnapshot.data() : null, newValue: { storageAvailable: calculated.storageAvailable, usageCoverage: calculated.usageCoverage, storageBytes: calculated.storageBytes, firestoreBytesEstimated: calculated.firestoreBytesEstimated, totalBytesEstimated: calculated.totalBytesEstimated, fileCount: calculated.fileCount, recordCount: calculated.recordCount, breakdown: calculated.breakdown, storageLimitBytes }, metadata: {}, createdAt: FieldValue.serverTimestamp() });
+      transaction.set(auditRef, {
+        action: 'ORGANIZATION_USAGE_RECALCULATED',
+        actorUid: actor.uid,
+        actorRole: actor.role,
+        targetType: 'ORGANIZATION_USAGE',
+        targetId: orgId,
+        organizationId: orgId,
+        metadata: {
+          storageBytes: calculated.storageBytes,
+          firestoreBytesEstimated: calculated.firestoreBytesEstimated,
+          totalBytesEstimated: calculated.totalBytesEstimated,
+          fileCount: calculated.fileCount,
+          recordCount: calculated.recordCount,
+          storageLimitBytes,
+        },
+        createdAt: FieldValue.serverTimestamp(),
+      });
       return storedUsage({ ...writeData, lastCalculatedAt: calculated.lastCalculatedAt, lastReconciledAt: calculated.lastReconciledAt });
     });
   } finally { inFlightReconciliations.delete(orgId); }
@@ -160,7 +176,16 @@ export async function setOrganizationStorageLimit(orgId: string, storageLimitByt
     if (!organizationSnapshot.exists) throw new ApiError('NOT_FOUND', 'Organization not found.', 404);
     const before = usageSnapshot.exists ? usageSnapshot.data() || {} : {};
     transaction.set(usageRef, { storageLimitBytes, updatedAt: FieldValue.serverTimestamp(), updatedBy: actor.uid }, { merge: true });
-    transaction.set(auditRef, { action: 'ORGANIZATION_STORAGE_LIMIT_UPDATED', actorUid: actor.uid, actorEmail: actor.email, actorRole: actor.role, targetType: 'ORGANIZATION_USAGE', targetId: orgId, organizationId: orgId, previousValue: { storageLimitBytes: before.storageLimitBytes ?? null }, newValue: { storageLimitBytes }, metadata: {}, createdAt: FieldValue.serverTimestamp() });
+    transaction.set(auditRef, {
+      action: 'ORGANIZATION_STORAGE_LIMIT_UPDATED',
+      actorUid: actor.uid,
+      actorRole: actor.role,
+      targetType: 'ORGANIZATION_USAGE',
+      targetId: orgId,
+      organizationId: orgId,
+      metadata: { storageLimitBytes },
+      createdAt: FieldValue.serverTimestamp(),
+    });
     result = storedUsage({ ...before, storageLimitBytes });
   });
   return result;

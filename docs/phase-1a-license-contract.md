@@ -24,6 +24,7 @@ The organization document contains enforcement mirrors only:
 - `licenseStatus`
 - `licenseWriteEnabled`
 - `licenseExpiresAt`
+- `maxUsers`
 
 The Client App rules use the mirrors for business-write enforcement. A trial
 or active subscription is writable until its corresponding end timestamp;
@@ -50,6 +51,11 @@ missing root lifecycle states are rejected for manual reconciliation; they are
 not silently activated. Mirror drift inspection includes root status, while the
 existing mirror-repair CLI continues refusing lifecycle changes. No production
 backfill or automatic status rewrite is part of this change.
+
+Commercial products are platform metadata, not Client authorization tiers. See
+[commercial-entitlement-mapping.md](./commercial-entitlement-mapping.md) for
+the `planId`/`entitlementTier` extension and the rule that `license.plan`
+remains the Client-supported stable entitlement value.
 
 ## Rules merge recommendation
 

@@ -1,16 +1,45 @@
-import { FieldValue } from 'firebase-admin/firestore';
+import { FieldPath, FieldValue } from 'firebase-admin/firestore';
 import { adminAuth, adminDb } from './firebase-admin';
 import { ApiError } from './api-errors';
 import { AuthenticatedPlatformAdmin } from './platform-admin';
 import { enumValue, requiredString, readJsonBody } from './request';
 import { NextRequest } from 'next/server';
+import type { PlatformAdminPage } from '../types';
 
 const ROLES = ['SUPER_ADMIN', 'SUPPORT'] as const;
 const STATUSES = ['ACTIVE', 'DISABLED'] as const;
 
-export async function listPlatformAdmins() {
-  const snapshot = await adminDb.collection('platformAdmins').get();
-  return snapshot.docs.map((item) => { const data = item.data(); const date = (value: unknown) => value && typeof value === 'object' && 'toDate' in value && typeof value.toDate === 'function' ? value.toDate().toISOString() : undefined; return { uid: item.id, email: data.email || '', displayName: data.displayName || '', role: data.role, status: data.status, createdAt: date(data.createdAt), updatedAt: date(data.updatedAt) }; });
+const PLATFORM_ADMIN_PAGE_SIZE = 25;
+
+/** Bounded platform-admin directory page; no browser-side full directory load. */
+export async function listPlatformAdminPage(cursor?: string): Promise<PlatformAdminPage> {
+  if (cursor !== undefined && (typeof cursor !== 'string' || cursor.length > 512 || cursor.includes('/'))) {
+    throw new ApiError('INVALID_REQUEST', 'Invalid platform administrator pagination cursor.', 400);
+  }
+  let query = adminDb.collection('platformAdmins').orderBy(FieldPath.documentId()).limit(PLATFORM_ADMIN_PAGE_SIZE + 1);
+  if (cursor) query = query.startAfter(cursor);
+  const snapshot = await query.get();
+  const items = snapshot.docs.slice(0, PLATFORM_ADMIN_PAGE_SIZE).map((item) => {
+    const data = item.data();
+    const date = (value: unknown) => value && typeof value === 'object' && 'toDate' in value && typeof value.toDate === 'function' ? value.toDate().toISOString() : undefined;
+    return {
+      uid: item.id,
+      email: typeof data.email === 'string' ? data.email : undefined,
+      // The Console never needs to render an opaque Firebase UID as a name.
+      displayName: typeof data.displayName === 'string' && data.displayName.trim()
+        ? data.displayName.trim()
+        : typeof data.email === 'string' && data.email.trim()
+          ? data.email.trim()
+          : 'Unnamed platform administrator',
+      role: data.role === 'SUPER_ADMIN' || data.role === 'SUPPORT' ? data.role : undefined,
+      status: data.status === 'ACTIVE' || data.status === 'DISABLED' ? data.status : undefined,
+      createdAt: date(data.createdAt),
+      updatedAt: date(data.updatedAt),
+    };
+  });
+  const hasMore = snapshot.docs.length > PLATFORM_ADMIN_PAGE_SIZE;
+  const nextCursor = hasMore ? items.at(-1)?.uid : undefined;
+  return { items, ...(nextCursor ? { nextCursor } : {}), hasMore };
 }
 
 export async function createPlatformAdmin(request: NextRequest, actor: AuthenticatedPlatformAdmin) {
@@ -25,7 +54,15 @@ export async function createPlatformAdmin(request: NextRequest, actor: Authentic
     const existing = await transaction.get(ref);
     if (existing.exists) throw new ApiError('CONFLICT', 'A platform administrator record already exists for this UID.', 409);
     transaction.set(ref, { email: authUser.email || '', displayName: authUser.displayName || '', role, status, createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(), createdBy: actor.uid, updatedBy: actor.uid });
-    transaction.set(auditRef, { action: 'PLATFORM_ADMIN_ADDED', actorUid: actor.uid, actorEmail: actor.email, actorRole: actor.role, targetType: 'PLATFORM_ADMIN', targetId: uid, previousValue: null, newValue: { email: authUser.email || '', displayName: authUser.displayName || '', role, status }, metadata: {}, createdAt: FieldValue.serverTimestamp() });
+    transaction.set(auditRef, {
+      action: 'PLATFORM_ADMIN_ADDED',
+      actorUid: actor.uid,
+      actorRole: actor.role,
+      targetType: 'PLATFORM_ADMIN',
+      targetId: uid,
+      metadata: { role, status },
+      createdAt: FieldValue.serverTimestamp(),
+    });
   });
   return { uid, email: authUser.email || '', displayName: authUser.displayName || '', role, status };
 }
@@ -50,7 +87,20 @@ export async function updatePlatformAdmin(request: NextRequest, uid: string, act
     transaction.set(ref, next, { merge: true });
     const auditRef = adminDb.collection('platformAuditLogs').doc();
     const auditAction = status === 'DISABLED' ? 'PLATFORM_ADMIN_DISABLED' : status === 'ACTIVE' && current.status === 'DISABLED' ? 'PLATFORM_ADMIN_REACTIVATED' : role && role !== current.role ? 'PLATFORM_ADMIN_ROLE_CHANGED' : 'PLATFORM_ADMIN_UPDATED';
-    transaction.set(auditRef, { action: auditAction, actorUid: actor.uid, actorEmail: actor.email, actorRole: actor.role, targetType: 'PLATFORM_ADMIN', targetId: uid, previousValue: { role: current.role, status: current.status }, newValue: { role: next.role, status: next.status }, metadata: {}, createdAt: FieldValue.serverTimestamp() });
+    transaction.set(auditRef, {
+      action: auditAction,
+      actorUid: actor.uid,
+      actorRole: actor.role,
+      targetType: 'PLATFORM_ADMIN',
+      targetId: uid,
+      metadata: {
+        previousRole: current.role,
+        nextRole: next.role,
+        previousStatus: current.status,
+        nextStatus: next.status,
+      },
+      createdAt: FieldValue.serverTimestamp(),
+    });
     return { uid, email: typeof current.email === 'string' ? current.email : '', displayName: next.displayName, role: next.role, status: next.status };
   });
   return result;

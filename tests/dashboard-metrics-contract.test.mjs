@@ -9,7 +9,7 @@ const auditService = await readFile(new URL('../lib/server/console-read-service.
 const dashboard = await readFile(new URL('../components/console/DashboardModule.tsx', import.meta.url), 'utf8');
 const apiClient = await readFile(new URL('../lib/console-api.ts', import.meta.url), 'utf8');
 const organizations = await readFile(new URL('../components/console/OrganizationsModule.tsx', import.meta.url), 'utf8');
-const licensing = await readFile(new URL('../components/console/LicensingModule.tsx', import.meta.url), 'utf8');
+const licensing = await readFile(new URL('../components/console/SubscriptionOperationsModule.tsx', import.meta.url), 'utf8');
 const auditLogs = await readFile(new URL('../components/console/AuditLogsModule.tsx', import.meta.url), 'utf8');
 const primitives = await readFile(new URL('../components/console/ConsolePrimitives.tsx', import.meta.url), 'utf8');
 const platformAdmins = await readFile(new URL('../components/console/PlatformAdminsModule.tsx', import.meta.url), 'utf8');
@@ -56,16 +56,17 @@ test('dashboard UI provides operational navigation, responsive sections, and rea
   assert.match(dashboard, /grid-cols-2|lg:grid-cols-2/);
   assert.match(dashboard, /CompactIconButton/);
   assert.match(dashboard, /platformAdmin\?\.role === 'SUPER_ADMIN'/);
-  assert.match(organizations, /health.*ACTION_REQUIRED/);
+  assert.match(organizations, /platformStatus/);
   assert.match(licensing, /expirationParam === 'SOON'/);
 });
 
 test('V1.1N bounds audit pages and persists a lightweight attention panel', () => {
   assert.match(service, /orderBy\('createdAt', 'desc'\)\.limit/);
   assert.match(auditService, /startAfter\(cursorSnapshot\)/);
-  assert.match(auditService, /pageInfo: \{ hasNextPage: Boolean\(nextCursor\), hasPreviousPage: Boolean\(cursor\), nextCursor \}/);
-  assert.match(apiClient, /getAuditLogs = \(limit = 25, cursor\?: string, organizationId\?: string\)/);
-  assert.match(auditLogs, /getAuditLogs\(PAGE_SIZE, pageCursor, organizationFilter/);
+  assert.match(auditService, /pageInfo: \{ hasNextPage: Boolean\(nextCursor\), hasPreviousPage: Boolean\(cursor\)/);
+  assert.match(auditService, /\.\.\.\(nextCursor \? \{ nextCursor \} : \{\}\)/);
+  assert.match(apiClient, /getAuditLogs = \(limit = 25, cursor\?: string, filters: PlatformAuditLogFilters = \{\}\)/);
+  assert.match(auditLogs, /getAuditLogs\(PAGE_SIZE, pageCursor, filters\)/);
   assert.match(auditLogs, /Previous audit log page/);
   assert.match(auditLogs, /Next audit log page/);
   assert.match(dashboard, /bsm-console-dashboard-attention-collapsed/);

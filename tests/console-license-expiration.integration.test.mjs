@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Timestamp } from 'firebase-admin/firestore';
-import { enforcementMirrors } from '../lib/license-contract.ts';
+import { enforcementMirrors, parseCanonicalLicense } from '../lib/license-contract.ts';
+import { DEFAULT_SUBSCRIPTION_PLANS } from '../lib/subscription-plan-contract.ts';
 import { adminAuth, adminDb } from '../lib/server/firebase-admin-core.ts';
 import { handleLicenseMutation } from '../lib/server/license-handler.ts';
 
@@ -169,4 +170,32 @@ test('valid future mutations and effective expiration mirrors remain consistent'
   result = await call(admin.token, wallClockTrial.organizationId, 'extend-trial', { trialEndsAt: future(14).toDate().toISOString() });
   assert.equal(result.status, 200);
   assertMirrors(await state(wallClockTrial));
+});
+
+test('suspending a linked subscription preserves the canonical status and records cancellation only as subscription metadata', async () => {
+  const admin = await createAdmin();
+  await adminDb.collection('platformAdmins').doc(admin.uid).set({ status: 'ACTIVE', role: 'SUPER_ADMIN', email: `${admin.uid}@example.test` });
+  await adminDb.collection('platformPlans').doc('founding_100').set(DEFAULT_SUBSCRIPTION_PLANS.founding_100);
+  await adminDb.collection('platformPlanUsage').doc('founding_100').set({ eligibleCustomerCount: 1 });
+
+  const fixture = await seedLicense({ status: 'ACTIVE', plan: 'TEAM', subscriptionEndsAt: future() });
+  await fixture.licenseRef.set({
+    organizationId: fixture.organizationId,
+    planId: 'founding_100',
+    subscriptionStatus: 'active',
+    priceAtSubscription: 99,
+    currency: 'USD',
+    billingInterval: 'year',
+  }, { merge: true });
+
+  const result = await call(admin.token, fixture.organizationId, 'suspend', { reason: 'Validation test' });
+  assert.equal(result.status, 200, result.error?.message);
+
+  const current = await state(fixture);
+  assert.equal(current.license.status, 'SUSPENDED');
+  assert.equal(current.license.subscriptionStatus, 'cancelled');
+  assert.equal(parseCanonicalLicense(current.license)?.status, 'SUSPENDED');
+  assert.equal(['TRIAL', 'ACTIVE', 'EXPIRED', 'SUSPENDED'].includes(current.license.status), true);
+  assert.equal(current.mirrors.licenseStatus, 'SUSPENDED');
+  assert.equal(current.mirrors.licenseWriteEnabled, false);
 });

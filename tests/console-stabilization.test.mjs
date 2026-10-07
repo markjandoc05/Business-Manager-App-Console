@@ -53,7 +53,7 @@ test('usage reconciliation preserves a changed or cleared limit through the actu
   const f=consoleFixture({environment:{FIREBASE_STORAGE_BUCKET:'synthetic-bucket'}});f.records.set('organizations/org',{name:'Synthetic'});f.records.set('organizations/org/usage/current',{storageLimitBytes:100,retained:'metadata'});f.storageFiles.push({metadata:{size:'20'}});
   const service=f.load('lib/server/organization-usage-service.ts');f.beforeStorage(()=>service.setOrganizationStorageLimit('org',limit,f.actor));const result=await service.recalculateOrganizationUsage('org',f.actor);
   assert.equal(result.storageLimitBytes,limit);assert.equal(result.usagePercent,limit===null?null:10);assert.equal(f.records.get('organizations/org/usage/current').storageLimitBytes,limit);assert.equal(f.records.get('organizations/org/usage/current').retained,'metadata');
-  const audit=[...f.records].find(([key,value])=>key.startsWith('platformAuditLogs/')&&value.action==='ORGANIZATION_USAGE_RECALCULATED')[1];assert.equal(audit.newValue.storageLimitBytes,limit);
+  const audit=[...f.records].find(([key,value])=>key.startsWith('platformAuditLogs/')&&value.action==='ORGANIZATION_USAGE_RECALCULATED')[1];assert.equal(audit.metadata.storageLimitBytes,limit);
  }
 });
 test('missing/legacy storage measurements remain unavailable and database coverage stays explicitly partial',async()=>{
@@ -65,16 +65,16 @@ test('missing/legacy storage measurements remain unavailable and database covera
 });
 test('organization-filtered audit pages reach matching old events despite newer unrelated events and validate cursors',async()=>{
  const f=consoleFixture();for(let i=0;i<130;i++)f.records.set(`platformAuditLogs/event-${String(i).padStart(3,'0')}`,{organizationId:i<30?'org':'other',createdAt:Timestamp.fromMillis(i+1),action:'SYNTHETIC'});
- const service=f.load('lib/server/console-read-service.ts');const first=await service.listConsoleAuditLogs(25,undefined,'org');assert.equal(first.items.length,25);assert.ok(first.items.every(row=>row.organizationId==='org'));assert.equal(first.items[0].id,'event-029');
- const second=await service.listConsoleAuditLogs(25,first.nextCursor,'org');assert.equal(second.items.length,5);assert.equal(second.nextCursor,undefined);
- await assert.rejects(()=>service.listConsoleAuditLogs(25,'event-129','org'),e=>e.status===400);
- await assert.rejects(()=>service.listConsoleAuditLogs(25,'missing','org'),e=>e.status===409);
- await assert.rejects(()=>service.listConsoleAuditLogs(25,undefined,'../org'),e=>e.status===400);
+ const service=f.load('lib/server/console-read-service.ts');const first=await service.listConsoleAuditLogs(25,undefined,{organizationId:'org'});assert.equal(first.items.length,25);assert.ok(first.items.every(row=>row.organizationId==='org'));assert.equal(first.items[0].id,'event-029');
+ const second=await service.listConsoleAuditLogs(25,first.nextCursor,{organizationId:'org'});assert.equal(second.items.length,5);assert.equal(second.nextCursor,undefined);
+ await assert.rejects(()=>service.listConsoleAuditLogs(25,'event-129',{organizationId:'org'}),e=>e.status===400);
+ await assert.rejects(()=>service.listConsoleAuditLogs(25,'missing',{organizationId:'org'}),e=>e.status===400);
+ await assert.rejects(()=>service.listConsoleAuditLogs(25,undefined,{organizationId:'../org'}),e=>e.status===400);
 });
 test('bounded query pages retain every organization/member and dashboard totals without truncating existing lists',async()=>{
  const f=consoleFixture();for(let i=0;i<111;i++){const p=`organizations/org-${String(i).padStart(3,'0')}`;f.records.set(p,{name:p,status:'active'});f.records.set(`${p}/members/member`,{userId:'member',role:'ADMIN',status:'active'});}
  for(let i=0;i<220;i++)f.records.set(`organizations/org-000/members/extra-${String(i).padStart(3,'0')}`,{userId:`extra-${i}`,role:'USER',status:'active'});
- const reads=f.load('lib/server/console-read-service.ts');assert.equal((await reads.listConsoleOrganizations()).length,111);assert.equal((await reads.listConsoleMemberships()).length,331);assert.equal((await reads.getConsoleOrganization('org-000')).members.length,221);
+ const reads=f.load('lib/server/console-read-service.ts');assert.equal((await reads.listConsoleOrganizations()).length,111);
  const dashboard=f.load('lib/server/dashboard-service.ts');const metrics=await dashboard.getDashboardMetrics();assert.equal(metrics.summary.organizationsTotal,111);assert.equal(metrics.summary.activeMembers,331);
  const listQueries=f.reads.filter(row=>typeof row==='object'&&(/organizations$|\/members$/.test(row.path)));assert.ok(listQueries.length>0);assert.ok(listQueries.every(row=>row.maximum===100));
 });
@@ -94,5 +94,5 @@ test('actual audit API and browser request preserve organization filter and unch
  const f=consoleFixture({overrides:{'./firebase':{firebaseAuth:auth},'firebase/auth':{getIdToken:async user=>user.uid,signOut:async()=>{}}},globals:{fetch:async(path,options)=>{requestedPath=path;return route.GET({url:`http://localhost${path}`,headers:new Headers(options.headers)});}}});
  f.records.set('platformAdmins/support',{status:'ACTIVE',role:'SUPPORT'});
  route=f.load('app/api/audit-logs/route.ts');f.records.set('platformAuditLogs/old',{organizationId:'org',createdAt:Timestamp.fromMillis(1)});f.records.set('platformAuditLogs/new',{organizationId:'other',createdAt:Timestamp.fromMillis(2)});
- const api=f.load('lib/console-api.ts');const result=await api.getAuditLogs(25,undefined,'org');assert.equal(result.items.length,1);assert.equal(result.items[0].organizationId,'org');assert.ok(requestedPath.includes('organizationId=org'));
+ const api=f.load('lib/console-api.ts');const result=await api.getAuditLogs(25,undefined,{organizationId:'org'});assert.equal(result.items.length,1);assert.equal(result.items[0].organizationId,'org');assert.ok(requestedPath.includes('organizationId=org'));
 });

@@ -78,8 +78,10 @@ test('invalid license repair is atomic, authorized, auditable, and seat-safe', a
   assert.equal((await invalid.ref.get()).data().licenseStatus, 'TRIAL');
   const audit = await adminDb.collection('platformAuditLogs').where('organizationId', '==', invalid.orgId).get();
   assert.equal(audit.size, 1);
-  assert.equal(audit.docs[0].data().action, 'ORGANIZATION_LICENSE_REPAIRED');
-  assert.equal(audit.docs[0].data().metadata.reason, 'Legacy organization missing canonical license fields.');
+  const auditData = audit.docs[0].data();
+  assert.equal(auditData.action, 'ORGANIZATION_LICENSE_REPAIRED');
+  assert.deepEqual(auditData.metadata, {});
+  for (const privateField of ['actorEmail', 'targetEmail', 'previousValue', 'newValue']) assert.equal(privateField in auditData, false);
 
   const invalidPaid = await seedInvalid('repair-paid', 2);
   result = await callLicense(superAdmin.idToken, invalidPaid.orgId, 'repair-license', { plan: 'TEAM', maxUsers: 1, subscriptionStartedAt: past(), subscriptionEndsAt: future(365), reason: 'Repair paid license' });
@@ -170,6 +172,22 @@ test('existing-user member add, archive, restore, and seat guards preserve histo
   result = await callAdd(superAdmin.idToken, orgId, { email: disabled.email, role: 'USER' });
   assert.equal(result.status, 409);
   assert.equal((await ref.collection('members').doc(disabled.localId).get()).exists, false);
+  for (const [index, override] of [{ status: 'ACTIVE' }, { active: false }, { uid: 'wrong-uid' }, { status: 'suspended' }].entries()) {
+    const blocked = await user(`strict-global-${index}`);
+    const profile = { uid: blocked.localId, email: blocked.email, status: 'active', active: true, ...override };
+    await adminDb.collection('users').doc(blocked.localId).set(profile);
+    const denied = await callAdd(superAdmin.idToken, orgId, { email: blocked.email, role: 'USER' });
+    assert.equal(denied.status, 409);
+    assert.equal((await ref.collection('members').doc(blocked.localId).get()).exists, false);
+    assert.deepEqual((await adminDb.collection('users').doc(blocked.localId).get()).data(), profile);
+  }
+  const missingProfile = await user('missing-global-profile');
+  await adminDb.doc(`organizations/other-${suffix}/members/${missingProfile.localId}`).set({userId:missingProfile.localId,role:'ADMIN',status:'active'});
+  assert.equal((await callAdd(superAdmin.idToken, orgId, {email:missingProfile.email,role:'USER'})).status,409);
+  assert.equal((await adminDb.doc(`users/${missingProfile.localId}`).get()).exists,false);
+  const authDisabled = await user('auth-disabled-add');
+  await adminAuth.updateUser(authDisabled.localId,{disabled:true});
+  assert.equal((await callAdd(superAdmin.idToken, orgId, {email:authDisabled.email,role:'USER'})).status,409);
   result = await callAdd(superAdmin.idToken, orgId, { email: 'missing-account@example.test', role: 'USER' });
   assert.equal(result.status, 201, result.error?.stack || result.error?.message);
   assert.equal(result.data.invitation.status, 'pending');
@@ -310,4 +328,22 @@ test('member API routes enforce platform authorization and expose the shared mut
   assert.equal(result.status, 403);
   result = await callRoute(updateMemberRoute, superAdmin.idToken, orgId, 'PATCH', { status: 'active' }, `missing-${suffix}`);
   assert.equal(result.status, 404);
+});
+
+
+test('Add Member activates a first-time pending identity but cannot revive a linked pending account', async () => {
+  const admin = await user('pending-add-super');
+  await adminDb.doc(`platformAdmins/${admin.localId}`).set({role:'SUPER_ADMIN',status:'ACTIVE'});
+  const pending = await user('pending-add-fresh');
+  await adminDb.doc(`users/${pending.localId}`).set({uid:pending.localId,status:'pending',active:false,email:pending.email});
+  const target = await seedMemberOrganization('pending-new-account',validMemberLicense('ACTIVE',3));
+  const added = await callAdd(admin.idToken,target.orgId,{email:pending.email,role:'ADMIN'});
+  assert.equal(added.status,201,added.error?.message);
+  assert.equal((await adminDb.doc(`users/${pending.localId}`).get()).data().status,'active');
+  await adminDb.doc(`users/${pending.localId}`).update({status:'pending',active:false});
+  const other = await seedMemberOrganization('pending-existing-account',validMemberLicense('ACTIVE',3));
+  const denied = await callAdd(admin.idToken,other.orgId,{email:pending.email,role:'USER'});
+  assert.equal(denied.status,409);
+  assert.equal((await other.ref.collection('members').doc(pending.localId).get()).exists,false);
+  assert.equal((await adminDb.doc(`users/${pending.localId}`).get()).data().status,'pending');
 });

@@ -32,7 +32,7 @@ export function consoleFixture({environment={}, overrides={}, globals={}}={}) {
     if(ref.cursor){const at=docs.findIndex(row=>row.id===ref.cursor.id);assert.notEqual(at,-1,'Fixture cursor must belong to query');docs=docs.slice(at+1);}
     docs=docs.slice(0,ref.maximum??Infinity);return{docs,size:docs.length,empty:!docs.length};
   };
-  const db={doc,collection,runTransaction:callback=>{
+  const db={doc,collection,getAll:async(...refs)=>refs.map(ref=>snapshot(ref.path)),runTransaction:callback=>{
     const run=async()=>{if(beforeTransaction){const hook=beforeTransaction;beforeTransaction=undefined;await hook();}let writing=false;const writes=[];
       const transaction={get:async ref=>{assert.equal(writing,false,'Read after transaction write');reads.push(ref.path);return ref.filters?querySnapshot(ref):snapshot(ref.path);},set:(ref,data,options)=>{writing=true;writes.push(()=>records.set(ref.path,materialize(options?.merge?{...records.get(ref.path),...data}:data)));}};
       const result=await callback(transaction);writes.forEach(write=>write());return result;};

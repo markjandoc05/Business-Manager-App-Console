@@ -12,15 +12,16 @@ function dateOnly(value?: string) { return value ? value.slice(0, 10) : ''; }
 export function licenseActionLabel(action: LicenseAction) { return labels[action]; }
 
 export function LicenseActionDialog({ action, organization, activeMembers, busy, onClose, onSubmit }: { action: LicenseAction; organization: Organization; activeMembers: number; busy: boolean; onClose: () => void; onSubmit: (payload: LicenseActionPayload) => void }) {
-  const [plan, setPlan] = useState<OrganizationPlan>(action === 'CONVERT_TO_PAID' || action === 'RENEW' || action === 'CHANGE_PLAN' || action === 'REPAIR_LICENSE' ? 'TEAM' : organization.license?.plan || 'TRIAL');
+  const commercialEntitlement = organization.license?.planId && organization.license?.entitlementTier ? organization.license.entitlementTier : undefined;
+  const [plan, setPlan] = useState<OrganizationPlan>(action === 'CONVERT_TO_PAID' || action === 'RENEW' || action === 'CHANGE_PLAN' || action === 'REPAIR_LICENSE' ? commercialEntitlement || 'TEAM' : organization.license?.plan || 'TRIAL');
   const [maxUsers, setMaxUsers] = useState(String(organization.license?.maxUsers || Math.max(activeMembers, 1)));
   const [startDate, setStartDate] = useState(dateOnly(organization.license?.trialStartedAt || organization.license?.subscriptionStartedAt) || new Date().toISOString().slice(0, 10));
   const [endDate, setEndDate] = useState(dateOnly(organization.license?.subscriptionEndsAt) || dateOnly(organization.license?.trialEndsAt));
   const [reason, setReason] = useState('');
   const [validation, setValidation] = useState('');
   const title = labels[action];
-  const hasSeatInput = ['ACTIVATE', 'REPAIR_LICENSE', 'EDIT_LICENSE_DETAILS', 'CONVERT_TO_PAID', 'RENEW', 'CHANGE_SEAT_LIMIT'].includes(action);
-  const hasPlanInput = ['ACTIVATE', 'REPAIR_LICENSE', 'EDIT_LICENSE_DETAILS', 'CONVERT_TO_PAID', 'RENEW', 'CHANGE_PLAN'].includes(action);
+  const hasSeatInput = !commercialEntitlement && ['ACTIVATE', 'REPAIR_LICENSE', 'EDIT_LICENSE_DETAILS', 'CONVERT_TO_PAID', 'RENEW', 'CHANGE_SEAT_LIMIT'].includes(action);
+  const hasPlanInput = !commercialEntitlement && ['ACTIVATE', 'REPAIR_LICENSE', 'EDIT_LICENSE_DETAILS', 'CONVERT_TO_PAID', 'RENEW', 'CHANGE_PLAN'].includes(action);
   const hasStartInput = ['ACTIVATE', 'REPAIR_LICENSE', 'EDIT_LICENSE_DETAILS', 'CONVERT_TO_PAID', 'RENEW'].includes(action);
   const hasEndInput = ['ACTIVATE', 'REPAIR_LICENSE', 'EDIT_LICENSE_DETAILS', 'CONVERT_TO_PAID', 'RENEW', 'EXTEND_TRIAL', 'EXTEND_SUBSCRIPTION'].includes(action);
   const selectablePlans = action === 'ACTIVATE' || action === 'REPAIR_LICENSE' ? ['TRIAL', ...paidPlans] : action === 'EDIT_LICENSE_DETAILS' ? [organization.license?.plan || plan] : paidPlans;
@@ -39,7 +40,7 @@ export function LicenseActionDialog({ action, organization, activeMembers, busy,
   };
   const destructive = action === 'SUSPEND' || action === 'EXPIRE';
   return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true"><div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl"><h2 className="text-xl font-black text-gray-950">{title}</h2><p className="mt-1 text-sm text-gray-500">You are about to <strong>{title.toLowerCase()}</strong> for <strong>{organization.name}</strong>. The server remains authoritative and will record this action in the audit log.</p>
-    {hasPlanInput && <label className="mt-5 block text-sm font-bold">Plan<select value={plan} onChange={(e) => setPlan(e.target.value as OrganizationPlan)} className="mt-2 w-full rounded-lg border border-gray-200 px-3 py-2 font-normal">{selectablePlans.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>}
+    {commercialEntitlement && <p className="mt-5 rounded-lg border border-blue-100 bg-blue-50 p-3 text-sm text-blue-900">This commercial product grants the server-managed <strong>{commercialEntitlement}</strong> entitlement tier. The Console cannot override its plan or seat limit.</p>}{hasPlanInput && <label className="mt-5 block text-sm font-bold">Plan<select value={plan} onChange={(e) => setPlan(e.target.value as OrganizationPlan)} className="mt-2 w-full rounded-lg border border-gray-200 px-3 py-2 font-normal">{selectablePlans.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>}
     {hasSeatInput && <label className="mt-4 block text-sm font-bold">Maximum users <span className="font-normal text-gray-500">({activeMembers} active members)</span><input type="number" min={activeMembers} value={maxUsers} onChange={(e) => setMaxUsers(e.target.value)} className="mt-2 w-full rounded-lg border border-gray-200 px-3 py-2 font-normal" /></label>}
     {hasStartInput && <label className="mt-4 block text-sm font-bold">{plan === 'TRIAL' ? 'Trial start date' : 'Subscription start date'}<input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="mt-2 w-full rounded-lg border border-gray-200 px-3 py-2 font-normal" /></label>}
     {action === 'EXTEND_SUBSCRIPTION' && <p className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm text-gray-600">Current expiration: <strong>{dateOnly(organization.license?.subscriptionEndsAt) || '—'}</strong></p>}

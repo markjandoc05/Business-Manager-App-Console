@@ -1,3 +1,6 @@
+import { isEligibleSubscriptionStatus, isSubscriptionPlanId, type SubscriptionStatus } from './subscription-plan-contract.ts';
+import { isStableEntitlementTier, type StableEntitlementTier } from './commercial-entitlement-contract.ts';
+
 export const LICENSE_PLANS = ['TRIAL', 'SOLO', 'STARTER', 'TEAM', 'LEGACY'] as const;
 export const LICENSE_STATUSES = ['TRIAL', 'ACTIVE', 'EXPIRED', 'SUSPENDED'] as const;
 
@@ -14,12 +17,21 @@ export type CanonicalLicenseStatus = typeof LICENSE_STATUSES[number];
 export type PaidLicensePlan = Exclude<CanonicalLicensePlan, 'TRIAL'>;
 
 export interface CanonicalLicense {
+  organizationId?: string;
+  /** Immutable paid-tier snapshot for a commercial product-linked license. */
+  entitlementTier?: StableEntitlementTier;
+  planId?: string;
   plan: CanonicalLicensePlan;
   status: CanonicalLicenseStatus;
+  subscriptionStatus?: SubscriptionStatus;
   trialStartedAt?: unknown;
   trialEndsAt?: unknown;
   subscriptionStartedAt?: unknown;
   subscriptionEndsAt?: unknown;
+  renewalDate?: unknown;
+  priceAtSubscription?: number | null;
+  currency?: string;
+  billingInterval?: string;
   maxUsers: number;
   features: Record<string, boolean>;
   createdAt?: unknown;
@@ -33,7 +45,19 @@ export function parseCanonicalLicense(data: Record<string, unknown>): CanonicalL
   const plan = LICENSE_PLANS.includes(data.plan as CanonicalLicensePlan) ? data.plan as CanonicalLicensePlan : null;
   const status = LICENSE_STATUSES.includes(data.status as CanonicalLicenseStatus) ? data.status as CanonicalLicenseStatus : null;
   if (!plan || !status || typeof data.maxUsers !== 'number' || !Number.isInteger(data.maxUsers) || data.maxUsers < 1) return null;
-  const timestampFields = ['trialStartedAt', 'trialEndsAt', 'subscriptionStartedAt', 'subscriptionEndsAt', 'createdAt', 'updatedAt'];
+  if (data.planId !== undefined || data.subscriptionStatus !== undefined) {
+    if (!isSubscriptionPlanId(data.planId) || !isEligibleSubscriptionStatus(data.subscriptionStatus)) return null;
+  }
+  if (data.entitlementTier !== undefined && !isStableEntitlementTier(data.entitlementTier)) return null;
+  // A commercial trial is deliberately still `plan: TRIAL` for Client App
+  // compatibility. Once active, the Client-visible tier must equal the frozen
+  // commercial entitlement snapshot instead of a live catalog value.
+  if (data.entitlementTier !== undefined && status === 'ACTIVE' && plan !== data.entitlementTier) return null;
+  if (data.organizationId !== undefined && typeof data.organizationId !== 'string') return null;
+  if (data.priceAtSubscription !== undefined && data.priceAtSubscription !== null && (typeof data.priceAtSubscription !== 'number' || !Number.isFinite(data.priceAtSubscription) || data.priceAtSubscription < 0)) return null;
+  if (data.currency !== undefined && data.currency !== 'USD') return null;
+  if (data.billingInterval !== undefined && data.billingInterval !== 'year') return null;
+  const timestampFields = ['trialStartedAt', 'trialEndsAt', 'subscriptionStartedAt', 'subscriptionEndsAt', 'renewalDate', 'createdAt', 'updatedAt'];
   if (timestampFields.some((field) => data[field] !== undefined && data[field] !== null && timestampMillis(data[field]) === undefined)) return null;
   if (status === 'TRIAL' && plan !== 'TRIAL') return null;
   if (status === 'ACTIVE' && plan === 'TRIAL') return null;
@@ -45,12 +69,20 @@ export function parseCanonicalLicense(data: Record<string, unknown>): CanonicalL
   if (status === 'ACTIVE' && (subscriptionStartedAt === undefined || subscriptionEndsAt === undefined || subscriptionEndsAt <= subscriptionStartedAt)) return null;
   if (data.features !== undefined && (data.features === null || typeof data.features !== 'object' || Array.isArray(data.features) || Object.values(data.features as Record<string, unknown>).some((feature) => typeof feature !== 'boolean'))) return null;
   return {
+    organizationId: typeof data.organizationId === 'string' ? data.organizationId : undefined,
+    entitlementTier: isStableEntitlementTier(data.entitlementTier) ? data.entitlementTier : undefined,
+    planId: typeof data.planId === 'string' ? data.planId : undefined,
     plan,
     status,
+    subscriptionStatus: isEligibleSubscriptionStatus(data.subscriptionStatus) ? data.subscriptionStatus : undefined,
     trialStartedAt: data.trialStartedAt,
     trialEndsAt: data.trialEndsAt,
     subscriptionStartedAt: data.subscriptionStartedAt,
     subscriptionEndsAt: data.subscriptionEndsAt,
+    renewalDate: data.renewalDate,
+    priceAtSubscription: typeof data.priceAtSubscription === 'number' || data.priceAtSubscription === null ? data.priceAtSubscription : undefined,
+    currency: typeof data.currency === 'string' ? data.currency : undefined,
+    billingInterval: typeof data.billingInterval === 'string' ? data.billingInterval : undefined,
     maxUsers: data.maxUsers,
     features: data.features && typeof data.features === 'object' ? data.features as Record<string, boolean> : {},
     createdAt: data.createdAt,

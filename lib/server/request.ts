@@ -1,4 +1,3 @@
-import type { NextRequest } from 'next/server';
 import { ApiError } from './api-errors';
 
 const ORGANIZATION_ID_PATTERN = /^[A-Za-z0-9_-]{1,150}$/;
@@ -8,7 +7,7 @@ export function validateOrganizationId(value: unknown): string {
   return value;
 }
 
-export async function readJsonBody(request: NextRequest): Promise<Record<string, unknown>> {
+export async function readJsonBody(request: { json(): Promise<unknown> }): Promise<Record<string, unknown>> {
   let body: unknown;
   try { body = await request.json(); } catch { throw new ApiError('INVALID_REQUEST', 'Request body must be valid JSON.', 400); }
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new ApiError('INVALID_REQUEST', 'Request body must be a JSON object.', 400);

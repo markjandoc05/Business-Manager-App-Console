@@ -56,11 +56,9 @@ test('plan mapping, atomic mirrors, forged seat limits, and downgrade guards are
   assert.equal(result.status, 200, result.error?.message);
   assert.deepEqual(await state(upgrade), { plan: 'STARTER', maxUsers: 3, mirrorMaxUsers: 3, auditCount: 1 });
   const upgradeAudit = await adminDb.collection('platformAuditLogs').where('organizationId', '==', upgrade.orgId).get();
-  assert.equal(upgradeAudit.docs[0].data().action, 'ORGANIZATION_PLAN_CHANGED');
-  assert.equal(upgradeAudit.docs[0].data().previousValue.plan, 'SOLO');
-  assert.equal(upgradeAudit.docs[0].data().previousValue.maxUsers, 1);
-  assert.equal(upgradeAudit.docs[0].data().newValue.plan, 'STARTER');
-  assert.equal(upgradeAudit.docs[0].data().newValue.maxUsers, 3);
+  const upgradeAuditData = upgradeAudit.docs[0].data();
+  assert.equal(upgradeAuditData.action, 'ORGANIZATION_PLAN_CHANGED');
+  for (const privateField of ['actorEmail', 'targetEmail', 'previousValue', 'newValue']) assert.equal(privateField in upgradeAuditData, false);
   result = await mutate(admin.idToken, upgrade.orgId, { plan: 'TEAM' });
   assert.equal(result.status, 200, result.error?.message);
   assert.deepEqual(await state(upgrade), { plan: 'TEAM', maxUsers: 7, mirrorMaxUsers: 7, auditCount: 2 });

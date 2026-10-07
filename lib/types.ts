@@ -1,11 +1,3 @@
-export type HealthStatus = 'HEALTHY' | 'ATTENTION' | 'OFFLINE' | 'CRITICAL' | 'UNKNOWN';
-
-export type LicenseStatus = 'ACTIVE' | 'EXPIRING' | 'EXPIRED' | 'SUSPENDED';
-
-export type DeploymentStatus = 'CURRENT' | 'UPDATE_AVAILABLE' | 'DEPLOYING' | 'FAILED' | 'ROLLBACK_AVAILABLE';
-
-export type DeveloperRole = 'OWNER' | 'DEVELOPER' | 'SUPPORT';
-
 export type PlatformAdminRole = 'SUPER_ADMIN' | 'SUPPORT';
 export type PlatformAdminStatus = 'ACTIVE' | 'DISABLED';
 
@@ -20,6 +12,131 @@ export interface PlatformAdmin {
 }
 
 export type OrganizationLicenseStatus = 'TRIAL' | 'ACTIVE' | 'EXPIRED' | 'SUSPENDED';
+export type OrganizationSubscriptionStatus = 'trialing' | 'active' | 'expired' | 'cancelled';
+
+export interface ConsoleSubscriptionPlanUsage {
+  planId: string;
+  eligibleCustomerCount: number;
+  limit: number | null;
+  remaining: number | null;
+  isFull: boolean;
+  source: 'counter';
+  updatedAt?: string;
+}
+
+export interface ConsoleSubscriptionPlanMarketing {
+  badge?: string;
+  messages: string[];
+}
+
+export interface ConsoleSubscriptionPlan {
+  planId: string;
+  code: string;
+  /** Read-only platform mapping; never a Client App authorization input. */
+  entitlementTier: Exclude<OrganizationPlan, 'TRIAL'>;
+  displayName: string;
+  price: number;
+  currency: string;
+  billingInterval: 'year';
+  trialDays: number;
+  noCreditCardRequired: boolean;
+  /** Server-owned capacity for the Founding commercial offer; null otherwise. */
+  foundingLimit: number | null;
+  maxEligibleCustomers: number | null;
+  publicSignup: boolean;
+  marketing?: ConsoleSubscriptionPlanMarketing;
+  marketingUpdatedAt?: string;
+  marketingUpdatedByUid?: string;
+  marketingRevision: number;
+  autoRolloverEnabled: boolean;
+  autoRolloverPlanId: string | null;
+  source: 'persisted' | 'default';
+  usage: ConsoleSubscriptionPlanUsage;
+}
+
+/** Platform-only projection used by the Subscription / License Operations screen. */
+export interface SubscriptionOperationLicense {
+  organizationId: string;
+  organizationName: string;
+  planId: string | null;
+  planName: string | null;
+  entitlementTier: Exclude<OrganizationPlan, 'TRIAL'> | null;
+  canonicalPlan: OrganizationPlan | null;
+  status: LicenseAdminStatus;
+  canonicalStatus: OrganizationLicenseStatus | null;
+  documentState: LicenseDocumentState;
+  trialEndsAt?: string;
+  subscriptionStartedAt?: string;
+  subscriptionEndsAt?: string;
+  renewalDate?: string;
+  priceAtSubscription: number | null;
+  currency?: string;
+  billingInterval?: string;
+  activeSeatCount: number;
+  maxUsers: number | null;
+  allowedActions: LicenseAdminAction[];
+}
+
+export interface SubscriptionOperationsOverview {
+  founding100: {
+    limit: number;
+    remainingCapacity: number;
+    usageExceedsLimit: boolean;
+    publicSignup: boolean;
+    canonicalEligibleCustomerCount: number;
+    storedEligibleCustomerCount: number;
+    difference: number;
+    matches: boolean;
+  };
+  standardSubscriptionCount: number;
+  trialCount: number;
+  activeCount: number;
+  expiredCount: number;
+  suspendedCount: number;
+  upcomingRenewals: SubscriptionOperationLicense[];
+}
+
+export interface SubscriptionOperationsData {
+  overview: SubscriptionOperationsOverview;
+  licenses: SubscriptionOperationLicense[];
+}
+
+export type SubscriptionLicenseStatusFilter = 'ALL' | 'ACTIVE' | 'TRIAL' | 'EXPIRED' | 'SUSPENDED' | 'NO_LICENSE' | 'NEEDS_ATTENTION';
+export type SubscriptionRenewalFilter = 'ALL' | 'WITHIN_7' | 'WITHIN_30' | 'WITHIN_90' | 'OVERDUE' | 'NO_DATE';
+export type SubscriptionTrialFilter = 'ALL' | 'WITHIN_7' | 'WITHIN_14' | 'EXPIRED' | 'NO_TRIAL';
+
+/** Allowlisted server-side filters for the paginated Console license table. */
+export interface SubscriptionOperationLicenseFilters {
+  query?: string;
+  plan?: string;
+  status?: SubscriptionLicenseStatusFilter;
+  renewalPeriod?: SubscriptionRenewalFilter;
+  trialExpiration?: SubscriptionTrialFilter;
+}
+
+export interface SubscriptionOperationLicensePage {
+  licenses: SubscriptionOperationLicense[];
+  nextCursor?: string;
+  hasMore: boolean;
+}
+
+export interface SubscriptionAuditHistoryItem {
+  id: string;
+  action: string;
+  actorRole?: string;
+  createdAt?: string;
+  planId?: string;
+  priceAtSubscription?: number;
+  currency?: string;
+  billingInterval?: string;
+  provisioning?: boolean;
+}
+
+export interface SubscriptionLicenseDetail {
+  license: SubscriptionOperationLicense;
+  plan: Pick<ConsoleSubscriptionPlan, 'planId' | 'code' | 'entitlementTier' | 'displayName' | 'price' | 'currency' | 'billingInterval' | 'trialDays' | 'noCreditCardRequired' | 'foundingLimit' | 'maxEligibleCustomers' | 'publicSignup'> | null;
+  auditHistory: SubscriptionAuditHistoryItem[];
+}
 export type LicenseDocumentState = 'NO_LICENSE' | 'INVALID_LICENSE' | 'VALID_LICENSE';
 export type LicenseAdminStatus = OrganizationLicenseStatus | 'UNKNOWN';
 export type LicenseAdminAction =
@@ -79,14 +196,23 @@ export interface OrganizationUsage {
 }
 
 export interface OrganizationLicense {
+  organizationId?: string;
+  planId?: string;
+  entitlementTier?: Exclude<OrganizationPlan, 'TRIAL'>;
   plan?: OrganizationPlan;
   status?: OrganizationLicenseStatus;
+  canonicalStatus?: OrganizationLicenseStatus;
+  subscriptionStatus?: OrganizationSubscriptionStatus;
   maxUsers?: number;
   features?: Record<string, boolean>;
   trialStartedAt?: string;
   trialEndsAt?: string;
   subscriptionStartedAt?: string;
+  renewalDate?: string;
   subscriptionEndsAt?: string;
+  priceAtSubscription?: number | null;
+  currency?: string;
+  billingInterval?: string;
   createdAt?: string;
   updatedAt?: string;
   updatedBy?: string;
@@ -99,6 +225,7 @@ export interface Organization {
   businessType?: string;
   status?: 'trial' | 'active' | 'expired' | 'suspended';
   plan?: string;
+  planId?: string;
   subscriptionStatus?: string;
   maxUsers?: number;
   licenseStatus?: OrganizationLicenseStatus;
@@ -112,6 +239,8 @@ export interface Organization {
     timezoneSource: string;
     currencySource: string;
   };
+  /** Allowlisted organization-root metadata only; never customer records. */
+  platformMetadata?: OrganizationPlatformMetadata;
   ownerEmail?: string;
   createdAt?: string;
   updatedAt?: string;
@@ -144,6 +273,110 @@ export type OrganizationAttentionReason =
 export interface OrganizationAdminState {
   health: 'HEALTHY' | 'ACTION_REQUIRED' | 'WARNING';
   attentionReasons: OrganizationAttentionReason[];
+}
+
+/** Allowlisted organization-root metadata; never tenant business data. */
+export interface OrganizationPlatformMetadata {
+  workspaceSlug?: string;
+}
+
+/** Platform-safe record used by the Customers & Organizations registry. */
+export interface OrganizationRegistryEntry {
+  organizationId: string;
+  organizationName: string;
+  platformStatus: OrganizationAdminState['health'];
+  createdAt?: string;
+  planId: string | null;
+  planName: string | null;
+  canonicalPlan: OrganizationPlan | null;
+  licenseStatus: LicenseAdminStatus;
+  canonicalLicenseStatus: OrganizationLicenseStatus | null;
+  licenseDocumentState: LicenseDocumentState;
+  trialEndsAt?: string;
+  subscriptionStartedAt?: string;
+  renewalDate?: string;
+  subscriptionEndsAt?: string;
+  priceAtSubscription: number | null;
+  currency?: string;
+  billingInterval?: string;
+  activeSeatCount: number;
+  maxUsers: number | null;
+  platformMetadata: OrganizationPlatformMetadata;
+}
+
+/** Allowlisted filters for the cursor-paged Customers & Organizations registry. */
+export type OrganizationRegistryLicenseStatusFilter = 'ALL' | 'ACTIVE' | 'TRIAL' | 'EXPIRED' | 'SUSPENDED' | 'NO_LICENSE' | 'NEEDS_ATTENTION';
+export type OrganizationRegistryPlatformStatusFilter = 'ALL' | 'HEALTHY' | 'WARNING' | 'ACTION_REQUIRED';
+export type OrganizationRegistryCreationDateFilter = 'ALL' | 'WITHIN_7' | 'WITHIN_30' | 'WITHIN_90' | 'OLDER_THAN_90' | 'UNKNOWN';
+export type OrganizationRegistryLifecycleFilter = 'ALL' | 'TRIAL_ENDS_7' | 'TRIAL_ENDED' | 'RENEWS_30' | 'RENEWAL_OVERDUE' | 'NO_RENEWAL_OR_TRIAL_DATE';
+
+export interface OrganizationRegistryFilters {
+  query?: string;
+  plan?: string;
+  licenseStatus?: OrganizationRegistryLicenseStatusFilter;
+  platformStatus?: OrganizationRegistryPlatformStatusFilter;
+  creationDate?: OrganizationRegistryCreationDateFilter;
+  lifecycle?: OrganizationRegistryLifecycleFilter;
+}
+
+/** Small, authoritative plan labels used only by the registry filter control. */
+export interface OrganizationRegistryPlanOption {
+  planId: string;
+  displayName: string;
+}
+
+/** A bounded organization page; the browser never receives the whole registry. */
+export interface OrganizationRegistryPage {
+  items: OrganizationRegistryEntry[];
+  planOptions: OrganizationRegistryPlanOption[];
+  nextCursor?: string;
+  hasMore: boolean;
+}
+
+/** A deliberately redacted audit item for a single organization detail view. */
+export interface OrganizationPlatformAuditItem {
+  id: string;
+  action: string;
+  actorRole?: PlatformAdminRole | 'ORGANIZATION_ADMIN';
+  createdAt?: string;
+}
+
+export interface OrganizationOperationsDetail {
+  organization: OrganizationRegistryEntry;
+  auditHistory: OrganizationPlatformAuditItem[];
+}
+
+/** Platform-safe audit projection. It deliberately excludes identities and raw values. */
+export type PlatformAuditActorRole = PlatformAdminRole | 'ORGANIZATION_ADMIN' | 'SYSTEM';
+export type PlatformAuditResult = 'SUCCESS' | 'FAILED' | 'DENIED';
+
+export interface PlatformAuditLogItem {
+  id: string;
+  action: string;
+  actorRole: PlatformAuditActorRole;
+  targetType: string;
+  targetId?: string;
+  organizationId?: string;
+  /** Allowlisted organization-root display name for the current audit page. */
+  organizationName?: string;
+  result?: PlatformAuditResult;
+  details: string[];
+  createdAt?: string;
+}
+
+export interface PlatformAuditLogFilters {
+  dateFrom?: string;
+  dateTo?: string;
+  action?: string;
+  organizationId?: string;
+  actorRole?: PlatformAuditActorRole;
+  targetType?: string;
+}
+
+export interface PlatformAuditLogPage {
+  items: PlatformAuditLogItem[];
+  nextCursor?: string;
+  pageInfo: { hasNextPage: boolean; hasPreviousPage: boolean; nextCursor?: string };
 }
 
 export interface DashboardAttentionItem {
@@ -190,7 +423,6 @@ export interface DashboardActivityItem {
   action?: string;
   title: string;
   actorName: string;
-  actorEmail?: string;
   organizationId?: string;
   organizationName?: string;
   detail?: string;
@@ -228,6 +460,46 @@ export interface DashboardMetrics {
   recentActivity: DashboardActivityItem[];
 }
 
+/** Read-only, platform-wide operational health. No tenant business data is included. */
+export type PlatformHealthStatus = 'HEALTHY' | 'DEGRADED' | 'UNAVAILABLE';
+
+export interface PlatformHealthCheck {
+  id: 'CONSOLE_BACKEND' | 'FIRESTORE' | 'FIREBASE_ADMIN_AUTH' | 'SUBSCRIPTION_LICENSE_SERVICE' | 'PLAN_CATALOG' | 'LICENSE_MIRRORS';
+  label: string;
+  status: PlatformHealthStatus;
+  detail: string;
+}
+
+export interface PlatformHealthWarning {
+  code: 'FOUNDING_100_USAGE_MISMATCH' | 'FOUNDING_CAPACITY_EXCEEDED' | 'PLATFORM_PLAN_MISSING' | 'PLATFORM_PLAN_INVALID' | 'CANONICAL_LICENSE_MALFORMED' | 'CANONICAL_LICENSE_MISSING' | 'ORGANIZATION_LICENSE_MIRROR_INCONSISTENT';
+  title: string;
+  detail: string;
+  count?: number;
+}
+
+export interface PlatformHealthData {
+  status: PlatformHealthStatus;
+  checkedAt: string;
+  checks: PlatformHealthCheck[];
+  warnings: PlatformHealthWarning[];
+  foundingCapacity: {
+    configuredLimit: number;
+    canonicalEligibleCustomerCount: number;
+    remainingCapacity: number;
+    storedEligibleCustomerCount: number;
+    difference: number;
+    matches: boolean;
+    usageExceedsLimit: boolean;
+  } | null;
+  summary: {
+    totalOrganizations: number | null;
+    activeLicenses: number | null;
+    trialLicenses: number | null;
+    expiredLicenses: number | null;
+    suspendedLicenses: number | null;
+  };
+}
+
 export interface OrganizationMember {
   id: string;
   userId?: string;
@@ -244,6 +516,46 @@ export interface OrganizationMember {
   lastLoginFailureCode?: string;
 }
 
+/** Safe membership read model. Emails are limited to this authorized platform-operations screen. */
+export interface ConsoleMembership extends OrganizationMember {
+  organization: string;
+  organizationId: string;
+  licenseStatus: string;
+  organizationHealth?: OrganizationAdminState['health'];
+  attentionReasons?: OrganizationAttentionReason[];
+  activeMemberCount?: number;
+  maxUsers?: number | null;
+}
+
+export interface OrganizationMembershipFilters {
+  query?: string;
+  status?: OrganizationMemberStatus | 'ALL';
+}
+
+/** Membership is intentionally scoped to one organization and cursor-paged. */
+export interface OrganizationMembershipPage {
+  organization: OrganizationRegistryEntry;
+  members: ConsoleMembership[];
+  nextCursor?: string;
+  hasMore: boolean;
+}
+
+export interface PlatformAdminListEntry {
+  uid: string;
+  email?: string;
+  displayName?: string;
+  role?: PlatformAdminRole;
+  status?: PlatformAdminStatus;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface PlatformAdminPage {
+  items: PlatformAdminListEntry[];
+  nextCursor?: string;
+  hasMore: boolean;
+}
+
 export interface LicenseAdminState {
   documentState: LicenseDocumentState;
   status: LicenseAdminStatus;
@@ -253,129 +565,4 @@ export interface LicenseAdminState {
   daysRemaining: number | null;
   expiresAt: string | null;
   allowedActions: LicenseAdminAction[];
-}
-
-export interface DeveloperUser {
-  id: string;
-  name: string;
-  email: string;
-  role: DeveloperRole;
-  avatar: string;
-  lastLogin: string;
-}
-
-export interface Customer {
-  id: string;
-  name: string;
-  company: string;
-  orgCode: string;
-  type: 'Corporate' | 'SMB' | 'Enterprise';
-  status: 'ACTIVE' | 'TRIAL' | 'SUSPENDED' | 'INACTIVE';
-  plan: 'Enterprise' | 'Business' | 'Growth' | 'Trial';
-  primaryContactEmail: string;
-  phone: string;
-  website: string;
-  address: string;
-  country: string;
-  internalNotes: string;
-  createdAt: string;
-  installationsCount: number;
-  totalUsersCount: number;
-}
-
-export interface Installation {
-  id: string; // e.g. BSM-0001-001
-  name: string;
-  customerId: string;
-  customerName: string;
-  domain: string;
-  environment: 'PRODUCTION' | 'STAGING' | 'DEVELOPMENT';
-  region: string;
-  cloudProject: string;
-  firebaseProject: string;
-  cloudRunService: string;
-  dbStatus: 'Connected' | 'High Latency' | 'Degraded' | 'Disconnected';
-  storageUsedMb: number;
-  storageLimitMb: number;
-  appVersion: string;
-  revision?: string; // Optional for now
-  deploymentStatus: DeploymentStatus;
-  health: HealthStatus;
-  licenseId: string;
-  lastHeartbeat: string;
-  createdAt: string;
-  activeUsersNow: number;
-  totalLeadsCount: number;
-}
-
-export interface License {
-  id: string;
-  installationId: string;
-  customerId: string;
-  status: LicenseStatus;
-  planName: string;
-  seatsLimit: number;
-  seatsUsed: number;
-  issuedAt: string;
-  expiresAt: string;
-  licenseKeyMasked: string;
-  lastChecked: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface Release {
-  id: string;
-  version: string;
-  releaseDate: string;
-  releaseStatus: 'DRAFT' | 'STABLE' | 'DEPRECATED';
-  notes: string;
-}
-
-export interface InfrastructureMetrics {
-  installationId: string;
-  cloudRunStatus: 'Ready' | 'Scaling' | 'Error' | 'Updating';
-  cpuAllocation: string; // e.g. "1 vCPU"
-  memoryMb: number;
-  minInstances: number;
-  maxInstances: number;
-  firestoreRegion: string;
-  storageUsedGb: number;
-  activeConnections: number;
-  errorRate5xx: number; // percentage
-  averageLatencyMs: number;
-  lastChecked: string;
-}
-
-export interface DeploymentRecord {
-  id: string;
-  installationId: string;
-  version: string;
-  targetVersion: string;
-  status: DeploymentStatus;
-  initiatedBy: string;
-  deployedAt: string;
-  releaseNotes: string;
-}
-
-export type ActivityAction =
-  | 'CUSTOMER_CREATED' | 'CUSTOMER_UPDATED'
-  | 'INSTALLATION_REGISTERED' | 'INSTALLATION_UPDATED'
-  | 'LICENSE_CREATED' | 'LICENSE_ACTIVATED' | 'LICENSE_RENEWED' | 'LICENSE_SUSPENDED' | 'LICENSE_REACTIVATED'
-  | 'DOMAIN_UPDATED'
-  | 'DEPLOYMENT_STARTED' | 'DEPLOYMENT_COMPLETED' | 'DEPLOYMENT_FAILED' | 'ROLLBACK'
-  | 'INFRASTRUCTURE_WARNING'
-  | 'CONFIGURATION_CHANGED';
-
-export interface ActivityRecord {
-  id: string;
-  timestamp: string;
-  action: ActivityAction;
-  type: 'DEPLOYMENT' | 'LICENSE' | 'HEALTH' | 'INFRA' | 'SECURITY' | 'CONFIG';
-  severity: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS';
-  installationId?: string;
-  customerName?: string;
-  description: string;
-  actor: string;
-  metadata?: Record<string, any>;
 }

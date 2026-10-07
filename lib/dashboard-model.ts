@@ -84,12 +84,3 @@ export function humanizeAuditAction(action?: string) {
   };
   return action ? labels[action] || action.replaceAll('_', ' ').toLowerCase() : 'Administrative activity';
 }
-
-export function auditDetail(previousValue: unknown, newValue: unknown) {
-  const previous = previousValue && typeof previousValue === 'object' ? previousValue as Record<string, unknown> : {};
-  const next = newValue && typeof newValue === 'object' ? newValue as Record<string, unknown> : {};
-  if (previous.role !== undefined && next.role !== undefined && previous.role !== next.role) return `${String(previous.role)} → ${String(next.role)}`;
-  if (previous.status !== undefined && next.status !== undefined && previous.status !== next.status) return `${String(previous.status)} → ${String(next.status)}`;
-  if (next.reason && typeof next.reason === 'string') return next.reason;
-  return undefined;
-}

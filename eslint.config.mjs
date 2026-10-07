@@ -6,6 +6,6 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-export default defineConfig([{
+export default defineConfig([{ ignores: ["components/console/* 2.tsx", "components/console/* 3.tsx", ".next-*/**"] }, {
     extends: [...next],
 }]);

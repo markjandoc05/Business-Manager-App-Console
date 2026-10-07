@@ -2,14 +2,15 @@
 
 import React, { ReactNode, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { Building2, ClipboardList, LayoutDashboard, Menu, Shield, Users, X, CreditCard, Settings, LogOut } from 'lucide-react';
+import { Building2, ClipboardList, LayoutDashboard, Menu, Shield, Users, X, CreditCard, Settings, LogOut, Megaphone } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 
 const navigation = [
-  { href: '/', label: 'Dashboard', icon: LayoutDashboard },
-  { href: '/organizations', label: 'Organizations', icon: Building2 },
-  { href: '/users', label: 'Users', icon: Users },
-  { href: '/licensing', label: 'Licensing', icon: CreditCard },
+  { href: '/', label: 'Platform Health', icon: LayoutDashboard },
+  { href: '/organizations', label: 'Customers & Organizations', icon: Building2 },
+  { href: '/users', label: 'Members & Access', icon: Users },
+  { href: '/licensing', label: 'Subscriptions & Licenses', icon: CreditCard },
+  { href: '/plan-marketing', label: 'Plan Marketing', icon: Megaphone, superAdminOnly: true },
   { href: '/audit-logs', label: 'Audit Logs', icon: ClipboardList },
   { href: '/platform-admins', label: 'Platform Admins', icon: Shield },
   { href: '/settings', label: 'Settings', icon: Settings },
@@ -28,11 +29,11 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
       {mobileOpen && <div className="fixed inset-0 z-40 bg-slate-950/40 lg:hidden" onClick={() => setMobileOpen(false)} />}
       <aside className={`fixed inset-y-0 left-0 z-50 flex w-72 flex-col bg-slate-950 text-slate-300 transition-transform lg:static lg:translate-x-0 ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <div className="flex h-20 items-center justify-between border-b border-slate-800 px-6">
-          <button onClick={() => go('/')} className="flex items-center gap-3 text-left"><span className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-600 text-xl font-black text-white">B</span><span><span className="block font-black tracking-tight text-white">BSM CONSOLE</span><span className="block text-[10px] uppercase tracking-widest text-slate-500">Platform operations</span></span></button>
+          <button onClick={() => go('/')} className="flex items-center gap-3 text-left"><span className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-600 text-xl font-black text-white">V</span><span><span className="block font-black tracking-tight text-white">VENTALE CONSOLE</span><span className="block text-[10px] uppercase tracking-widest text-slate-500">Platform operations</span></span></button>
           <button className="text-slate-400 lg:hidden" onClick={() => setMobileOpen(false)} aria-label="Close navigation"><X className="h-5 w-5" /></button>
         </div>
         <nav className="flex-1 space-y-1 px-4 py-6">
-          {navigation.map(({ href, label, icon: Icon }) => {
+          {navigation.filter((item) => !item.superAdminOnly || platformAdmin?.role === 'SUPER_ADMIN').map(({ href, label, icon: Icon }) => {
             const active = href === '/' ? pathname === '/' : pathname.startsWith(href);
             return <button key={href} onClick={() => go(href)} className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-semibold transition ${active ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-900 hover:text-white'}`}><Icon className="h-4 w-4" />{label}</button>;
           })}

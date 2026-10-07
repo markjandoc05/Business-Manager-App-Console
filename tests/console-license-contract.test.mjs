@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { test } from 'node:test';
-import { buildOrganizationLicenseMirror, canonicalLicensePath, compareOrganizationLicenseMirror, enforcementMirrors, LICENSE_PLAN_CONFIG, parseCanonicalLicense, resolveCanonicalLicense } from '../lib/license-contract.ts';
+import { buildOrganizationLicenseMirror, canonicalLicensePath, compareOrganizationLicenseMirror, enforcementMirrors, LICENSE_PLAN_CONFIG, LICENSE_STATUSES, parseCanonicalLicense, resolveCanonicalLicense } from '../lib/license-contract.ts';
 import { deriveLicenseAdminState, deriveOrganizationAdminState } from '../lib/server/license-admin-state.ts';
 import { resolveOrganizationLocaleSettingsFromData } from '../lib/server/organization-locale-settings.ts';
 import { loadLicenseMirrorState } from '../lib/license-mirror.ts';
@@ -31,6 +31,20 @@ test('malformed or missing canonical licenses are safe and non-writable', () => 
   assert.equal(parseCanonicalLicense({ ...license('ACTIVE'), subscriptionStartedAt: future, subscriptionEndsAt: past }), null);
   assert.equal(resolveCanonicalLicense(null).canWrite, false);
   assert.equal(resolveCanonicalLicense(null).status, 'UNKNOWN');
+});
+
+test('canonical license statuses are restricted to the four supported lifecycle states', () => {
+  assert.deepEqual(LICENSE_STATUSES, ['TRIAL', 'ACTIVE', 'EXPIRED', 'SUSPENDED']);
+  for (const status of ['CANCELLED', 'CANCELED', 'INACTIVE']) {
+    assert.equal(parseCanonicalLicense({ plan: 'TEAM', status, maxUsers: 3, features: {} }), null);
+  }
+});
+
+test('there is no cancel mutation; suspension keeps the canonical state supported and uses cancellation only as subscription metadata', () => {
+  const service = fs.readFileSync(new URL('../lib/server/license-service.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(service.match(/export type LicenseMutationAction =[^;]+;/)?.[0] || '', /cancel/);
+  assert.match(service, /nextLicense\.status = 'SUSPENDED'/);
+  assert.match(service, /: 'cancelled'/);
 });
 
 test('paid plan defaults are defined once and remain deterministic', () => {
@@ -146,10 +160,14 @@ test('all license mutations use the centralized mirror helper', () => {
   assert.match(service, /transaction\.set\(organizationRef, \{ \.\.\.mirrors/);
 });
 
-test('the organization detail action matrix does not offer activation for ACTIVE licenses', () => {
+test('license actions remain in Subscription Operations while organization detail stays read-only', () => {
+  const operations = fs.readFileSync(new URL('../components/console/SubscriptionOperationsModule.tsx', import.meta.url), 'utf8');
   const detail = fs.readFileSync(new URL('../components/console/OrganizationDetailModule.tsx', import.meta.url), 'utf8');
-  assert.match(detail, /licenseAdminState/);
-  assert.match(detail, /allowedActions/);
+  assert.match(operations, /useLicenseAdminActions/);
+  assert.match(operations, /allowedActions/);
+  assert.match(detail, /Open licensing operations/);
+  assert.doesNotMatch(detail, /useLicenseAdminActions/);
+  assert.doesNotMatch(detail, /LicenseActionDialog/);
   assert.doesNotMatch(detail, /evaluation\.status ===/);
   assert.doesNotMatch(detail, /\['ACTIVATE', 'EXTEND_TRIAL', 'CHANGE_SEAT_LIMIT', 'SUSPEND', 'EXPIRE'\]/);
 });
@@ -169,18 +187,18 @@ test('read, route, and dialog contracts expose the licensing lifecycle foundatio
 });
 
 test('V1.1B licensing control center reuses the shared mutation dispatcher', () => {
-  const licensing = fs.readFileSync(new URL('../components/console/LicensingModule.tsx', import.meta.url), 'utf8');
+  const licensing = fs.readFileSync(new URL('../components/console/SubscriptionOperationsModule.tsx', import.meta.url), 'utf8');
   const detail = fs.readFileSync(new URL('../components/console/OrganizationDetailModule.tsx', import.meta.url), 'utf8');
   const dispatcher = fs.readFileSync(new URL('../lib/license-admin-actions.ts', import.meta.url), 'utf8');
   const hook = fs.readFileSync(new URL('../lib/use-license-admin-actions.ts', import.meta.url), 'utf8');
   assert.match(licensing, /useLicenseAdminActions/);
-  assert.match(licensing, /licenseDocumentState/);
-  assert.match(licensing, /licenseAdminState\?\.allowedActions/);
-  assert.match(licensing, /Needs Attention/);
-  assert.match(licensing, /Expiring within 7 days/);
+  assert.match(licensing, /documentState/);
+  assert.match(licensing, /allowedActions/);
+  assert.match(licensing, /Needs attention/);
+  assert.match(licensing, /Within 7 days/);
   assert.match(licensing, /activeMemberCount/);
   assert.match(licensing, /hidden.*md:block/);
-  assert.match(detail, /useLicenseAdminActions/);
+  assert.doesNotMatch(detail, /useLicenseAdminActions/);
   assert.doesNotMatch(detail, /if \(dialog === 'ACTIVATE'\)/);
   assert.match(dispatcher, /dispatchLicenseAction/);
   assert.match(dispatcher, /Organization activated successfully/);
@@ -203,12 +221,12 @@ test('the Console keeps tenant roles and unauthenticated callers outside platfor
   const dialog = fs.readFileSync(new URL('../components/console/LicenseActionDialog.tsx', import.meta.url), 'utf8');
   assert.match(auth, /A Firebase ID token is required/);
   assert.match(auth, /platform administrator is not authorized/);
-  assert.match(detail, /platformAdmin\?\.role === 'SUPER_ADMIN'/);
+  assert.match(detail, /platformAdmin\?\.role === 'SUPPORT'/);
   assert.match(dialog, /SUSPEND/);
   assert.match(dialog, /EXPIRE/);
 });
 
-test('V1.1C exposes server-derived organization health and operational controls', () => {
+test('organization registry uses server-derived health with a platform-safe detail projection', () => {
   const detail = fs.readFileSync(new URL('../components/console/OrganizationDetailModule.tsx', import.meta.url), 'utf8');
   const organizations = fs.readFileSync(new URL('../components/console/OrganizationsModule.tsx', import.meta.url), 'utf8');
   const users = fs.readFileSync(new URL('../components/console/UsersModule.tsx', import.meta.url), 'utf8');
@@ -219,11 +237,13 @@ test('V1.1C exposes server-derived organization health and operational controls'
   const authScreen = fs.readFileSync(new URL('../components/AuthScreen.tsx', import.meta.url), 'utf8');
   assert.deepEqual(deriveOrganizationAdminState({ name: 'Example', timezone: 'Asia/Manila', currency: 'PHP' }, deriveLicenseAdminState({ ...license('ACTIVE'), subscriptionEndsAt: new Date(Date.now() + 7 * 86_400_000).toISOString() }, 2)), { health: 'WARNING', attentionReasons: ['LICENSE_EXPIRING_SOON'] });
   assert.match(state, /deriveOrganizationAdminState/);
-  assert.match(detail, /SUPER ADMIN CONTROLS/);
-  assert.match(detail, /REPAIR_LICENSE/);
+  assert.match(detail, /Platform-safe workspace profile/);
+  assert.match(detail, /Recent platform activity/);
   assert.match(memberHook, /updateOrganizationMember/);
-  assert.match(organizations, /Action Needed/);
-  assert.match(organizations, /organizationAdminState/);
+  assert.match(organizations, /Organization registry/);
+  assert.match(organizations, /platformStatus/);
+  assert.match(organizations, /Creation date filter/);
+  assert.doesNotMatch(organizations, /ownerEmail/);
   assert.match(users, /License impact/);
   assert.match(profile, /ORGANIZATION_PROFILE_UPDATED/);
   assert.match(profile, /ORGANIZATION_MEMBER_ROLE_CHANGED/);
@@ -262,13 +282,12 @@ test('V1.1E exposes existing-user membership controls, metadata validation, and 
   assert.match(dialogs, /linked by Firebase UID/);
   assert.match(dialogs, /pending email assignment/);
   assert.match(dialogs, /Archive Member/);
-  assert.match(detail, /Active Users/);
-  assert.match(detail, /Available Seats/);
-  assert.match(detail, /MISSING_TIMEZONE/);
-  assert.match(detail, /formatDateInTimeZone/);
+  assert.match(detail, /Seats used \/ limit/);
+  assert.match(detail, /Recent platform activity/);
+  assert.doesNotMatch(detail, /Members & Access/);
   assert.match(users, /Manage Membership/);
   assert.match(users, /useOrganizationMemberAdmin/);
-  assert.match(organizations, /href=\{`\/organizations\/\$\{org\.id\}`\}/);
+  assert.match(organizations, /href=\{`\/organizations\/\$\{record\.organizationId\}`\}/);
   assert.match(primitives, /timeZone: timezone \|\| 'UTC'/);
 
   const instant = '2026-01-01T23:30:00.000Z';
@@ -309,7 +328,7 @@ test('V1.1G resolves organization locale settings from Client App canonical sett
   });
 });
 
-test('V1.1I Members & Access controls are wired through forms, shared actions, API routes, and refresh', () => {
+test('member controls remain isolated in the Users surface and server-authorized routes', () => {
   const detail = fs.readFileSync(new URL('../components/console/OrganizationDetailModule.tsx', import.meta.url), 'utf8');
   const users = fs.readFileSync(new URL('../components/console/UsersModule.tsx', import.meta.url), 'utf8');
   const dialogs = fs.readFileSync(new URL('../components/console/OrganizationAdminDialogs.tsx', import.meta.url), 'utf8');
@@ -322,14 +341,40 @@ test('V1.1I Members & Access controls are wired through forms, shared actions, A
   assert.match(dialogs, /type="submit"/);
   assert.match(dialogs, /Adding…/);
   assert.match(dialogs, /Confirm Archive Member/);
-  assert.match(detail, /setPendingMemberAction/);
-  assert.match(detail, /await refresh|refresh: load/);
+  assert.doesNotMatch(detail, /setPendingMemberAction/);
+  assert.doesNotMatch(detail, /OrganizationMember/);
   assert.match(users, /useOrganizationMemberAdmin/);
   assert.match(api, /organizations\/\$\{orgId\}\/members/);
   assert.match(addRoute, /requirePlatformAdmin\(request, \['SUPER_ADMIN'\]\)/);
   assert.match(updateRoute, /requirePlatformAdmin\(request, \['SUPER_ADMIN'\]\)/);
   assert.match(hook, /await refresh\(\)/);
   assert.match(hook, /error\.status === 409/);
+});
+
+test('organization membership management reuses trusted add, suspend, and archive flows', () => {
+  const users = fs.readFileSync(new URL('../components/console/UsersModule.tsx', import.meta.url), 'utf8');
+  const dialogs = fs.readFileSync(new URL('../components/console/OrganizationAdminDialogs.tsx', import.meta.url), 'utf8');
+  const detail = fs.readFileSync(new URL('../components/console/OrganizationDetailModule.tsx', import.meta.url), 'utf8');
+  const service = fs.readFileSync(new URL('../lib/server/organization-admin-service.ts', import.meta.url), 'utf8');
+
+  assert.match(users, /getOrganizationRegistryPage/);
+  assert.match(users, /lookupOrganizationUser/);
+  assert.match(users, /AddMemberDialog/);
+  assert.match(users, /ADD_MEMBER/);
+  assert.match(users, /SUSPEND_MEMBER/);
+  assert.match(users, /ARCHIVE_MEMBER/);
+  assert.match(users, /platformAdmin\?\.role === 'SUPER_ADMIN'/);
+  assert.match(users, /SUPPORT remains read-only/);
+  assert.doesNotMatch(users, /getFirestore|collection\(/);
+  assert.match(dialogs, /Suspend access/);
+  assert.match(dialogs, /Remove member/);
+  assert.match(dialogs, /Firebase account and other organization memberships are not deleted/);
+  assert.match(detail, /Members &amp; access/);
+  assert.match(service, /This organization has reached its active user limit/);
+  assert.match(service, /at least one active ADMIN/);
+  assert.match(service, /ORGANIZATION_MEMBER_ADDED/);
+  assert.match(service, /ORGANIZATION_MEMBER_SUSPENDED/);
+  assert.match(service, /ORGANIZATION_MEMBER_ARCHIVED/);
 });
 
 test('V1.1C repair and correction routes remain server-authorized and controlled', () => {
@@ -355,7 +400,7 @@ test('V1.1K responsive Console tables use shared compact accessible controls', (
   const primitives = fs.readFileSync(new URL('../components/console/ConsolePrimitives.tsx', import.meta.url), 'utf8');
   const organizations = fs.readFileSync(new URL('../components/console/OrganizationsModule.tsx', import.meta.url), 'utf8');
   const users = fs.readFileSync(new URL('../components/console/UsersModule.tsx', import.meta.url), 'utf8');
-  const licensing = fs.readFileSync(new URL('../components/console/LicensingModule.tsx', import.meta.url), 'utf8');
+  const licensing = fs.readFileSync(new URL('../components/console/SubscriptionOperationsModule.tsx', import.meta.url), 'utf8');
   const audit = fs.readFileSync(new URL('../components/console/AuditLogsModule.tsx', import.meta.url), 'utf8');
   const admins = fs.readFileSync(new URL('../components/console/PlatformAdminsModule.tsx', import.meta.url), 'utf8');
   const detail = fs.readFileSync(new URL('../components/console/OrganizationDetailModule.tsx', import.meta.url), 'utf8');
@@ -367,42 +412,40 @@ test('V1.1K responsive Console tables use shared compact accessible controls', (
   for (const source of [organizations, users, licensing, audit, admins, detail]) {
     assert.match(source, /min-w-0|table-fixed/);
   }
-  assert.match(organizations, /href=\{`\/organizations\/\$\{org\.id\}`\}/);
-  assert.match(organizations, /CompactIconButton/);
+  assert.match(organizations, /href=\{`\/organizations\/\$\{record\.organizationId\}`\}/);
+  assert.match(organizations, /Search organization or workspace/);
   assert.match(users, /CompactIconButton/);
-  assert.match(users, /#members-card/);
+  assert.match(users, /router\.push\(`\/organizations\/\$\{row\.organizationId\}`\)/);
   assert.match(users, /Manage Membership/);
   assert.doesNotMatch(users, /<tr[^>]*onClick/);
-  assert.match(licensing, /licenseAdminState\?\.allowedActions/);
+  assert.match(licensing, /allowedActions/);
   assert.match(licensing, /CompactIconButton/);
   assert.match(audit, /TruncatedText/);
   assert.match(audit, /md:hidden/);
   assert.match(admins, /CompactIconButton/);
-  assert.match(detail, /setPendingMemberAction/);
-  assert.match(detail, /CompactIconButton/);
-  assert.match(detail, /ARCHIVE_MEMBER/);
+  assert.match(detail, /Recent platform activity/);
+  assert.doesNotMatch(detail, /setPendingMemberAction/);
+  assert.doesNotMatch(detail, /ARCHIVE_MEMBER/);
   assert.doesNotMatch(detail, /<tr[^>]*onClick/);
 });
 
 test('login activity is displayed from membership data without per-member reads', () => {
-  const readService = fs.readFileSync(new URL('../lib/server/console-read-service.ts', import.meta.url), 'utf8');
+  const membershipService = fs.readFileSync(new URL('../lib/server/organization-operations-service.ts', import.meta.url), 'utf8');
   const detail = fs.readFileSync(new URL('../components/console/OrganizationDetailModule.tsx', import.meta.url), 'utf8');
   const users = fs.readFileSync(new URL('../components/console/UsersModule.tsx', import.meta.url), 'utf8');
   const dialogs = fs.readFileSync(new URL('../components/console/OrganizationAdminDialogs.tsx', import.meta.url), 'utf8');
   const types = fs.readFileSync(new URL('../lib/types.ts', import.meta.url), 'utf8');
   for (const field of ['lastLoginAt', 'lastLoginStatus', 'lastSuccessfulLoginAt', 'lastFailedLoginAt', 'lastLoginFailureCode']) {
-    assert.match(readService, new RegExp(field));
+    assert.match(membershipService, new RegExp(field));
     assert.match(types, new RegExp(field));
   }
-  assert.match(detail, /Last Login/);
-  assert.match(detail, /Login Status/);
-  assert.match(detail, /Successful/);
-  assert.match(detail, /No login yet/);
+  assert.doesNotMatch(detail, /Last Login/);
+  assert.doesNotMatch(detail, /Login Status/);
   assert.match(users, /lastLoginAt/);
   assert.match(dialogs, /Last Successful Login/);
   assert.match(dialogs, /Last Failed Login/);
   assert.match(dialogs, /Latest Login Status/);
   assert.match(dialogs, /Failure Reason/);
-  assert.match(readService, /readCollectionPages\(organizationSnapshot\.ref\.collection\('members'\)\)/);
-  assert.doesNotMatch(readService, /adminAuth\.getUser/);
+  assert.match(membershipService, /collection\('members'\)\.orderBy\(FieldPath\.documentId\(\)\)/);
+  assert.doesNotMatch(membershipService, /adminAuth\.getUser/);
 });

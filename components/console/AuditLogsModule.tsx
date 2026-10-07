@@ -1,59 +1,157 @@
 'use client';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import Link from 'next/link';
+import { ChevronLeft, ChevronRight, Filter, X } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
-import { ConsoleAuditLog, getAuditLogs } from '@/lib/console-api';
+import { getAuditLogs } from '@/lib/console-api';
+import type { PlatformAuditActorRole, PlatformAuditLogFilters, PlatformAuditLogItem } from '@/lib/types';
 import { CompactBadge, CompactIconButton, EmptyState, ErrorState, formatDate, LoadingState, TruncatedText } from './ConsolePrimitives';
 
 const PAGE_SIZE = 25;
+type AuditFilterDraft = { dateFrom: string; dateTo: string; action: string; organizationId: string; actorRole: string; targetType: string };
 
-function summarize(value: unknown) {
-  if (value === undefined || value === null) return '—';
-  try { return JSON.stringify(value); } catch { return String(value); }
+function initialFilters(organizationId: string): AuditFilterDraft {
+  return { dateFrom: '', dateTo: '', action: '', organizationId, actorRole: '', targetType: '' };
 }
 
-function actionTone(action?: string) {
-  if (action?.includes('FAILED') || action?.includes('SUSPEND') || action?.includes('EXPIRE')) return 'danger' as const;
-  if (action?.includes('REACTIVATE') || action?.includes('ACTIVATE') || action?.includes('ADD')) return 'success' as const;
-  return 'info' as const;
+function appliedFilters(draft: AuditFilterDraft): PlatformAuditLogFilters {
+  return {
+    ...(draft.dateFrom ? { dateFrom: draft.dateFrom } : {}),
+    ...(draft.dateTo ? { dateTo: draft.dateTo } : {}),
+    ...(draft.action.trim() ? { action: draft.action.trim() } : {}),
+    ...(draft.organizationId.trim() ? { organizationId: draft.organizationId.trim() } : {}),
+    ...(draft.actorRole ? { actorRole: draft.actorRole as PlatformAuditActorRole } : {}),
+    ...(draft.targetType ? { targetType: draft.targetType } : {}),
+  };
+}
+
+function actionTone(action: string) {
+  return action.includes('FAILED') || action.includes('SUSPEND') || action.includes('EXPIRE') || action.includes('DISABLED')
+    ? 'danger' as const
+    : action.includes('REACTIVATE') || action.includes('ACTIVATE') || action.includes('RENEW') || action.includes('ADD')
+      ? 'success' as const
+      : 'info' as const;
+}
+
+function resultTone(result?: string) {
+  return result === 'FAILED' || result === 'DENIED' ? 'danger' as const : result === 'SUCCESS' ? 'success' as const : 'neutral' as const;
+}
+
+function humanize(value: string) {
+  return value.toLowerCase().replaceAll('_', ' ').replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function organizationLabel(log: PlatformAuditLogItem) {
+  return log.organizationName || (log.organizationId ? 'Organization record' : '—');
+}
+
+function targetLabel(log: PlatformAuditLogItem) {
+  const targetType = humanize(log.targetType);
+  if (log.organizationName && ['ORGANIZATION', 'ORGANIZATION_LICENSE', 'ORGANIZATION_USAGE'].includes(log.targetType)) return `${targetType} · ${log.organizationName}`;
+  if (log.targetType === 'SUBSCRIPTION_PLAN' && log.targetId) return `${targetType} · ${humanize(log.targetId)}`;
+  return targetType;
+}
+
+function OrganizationCell({ log }: { log: PlatformAuditLogItem }) {
+  const label = organizationLabel(log);
+  if (!log.organizationId || !log.organizationName) return <span className="text-gray-500">{label}</span>;
+  return <Link href={`/organizations/${encodeURIComponent(log.organizationId)}`} className="block truncate font-semibold text-blue-700 hover:underline" title={label}>{label}</Link>;
+}
+
+function AuditDetailDialog({ log, onClose }: { log: PlatformAuditLogItem | null; onClose: () => void }) {
+  if (!log) return null;
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true" aria-label="Audit event details">
+      <div className="w-full max-w-xl rounded-2xl bg-white p-6 shadow-2xl">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-xl font-black text-gray-950">Audit event</h2>
+            <p className="mt-1 text-sm text-gray-500">Allowlisted administrative metadata only.</p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-lg border border-gray-200 p-2 text-gray-500 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" aria-label="Close audit details"><X className="h-4 w-4" aria-hidden="true" /></button>
+        </div>
+        <dl className="mt-5 grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
+          <div><dt className="text-xs font-bold uppercase tracking-wide text-gray-400">Timestamp</dt><dd className="mt-1 font-semibold text-gray-900">{formatDate(log.createdAt)}</dd></div>
+          <div><dt className="text-xs font-bold uppercase tracking-wide text-gray-400">Action</dt><dd className="mt-1"><CompactBadge label={log.action} tone={actionTone(log.action)} /></dd></div>
+          <div><dt className="text-xs font-bold uppercase tracking-wide text-gray-400">Actor role</dt><dd className="mt-1 font-semibold text-gray-900">{log.actorRole}</dd></div>
+          <div><dt className="text-xs font-bold uppercase tracking-wide text-gray-400">Result</dt><dd className="mt-1">{log.result ? <CompactBadge label={log.result} tone={resultTone(log.result)} /> : '—'}</dd></div>
+          <div><dt className="text-xs font-bold uppercase tracking-wide text-gray-400">Target</dt><dd className="mt-1 break-words font-semibold text-gray-900">{targetLabel(log)}</dd></div>
+          <div><dt className="text-xs font-bold uppercase tracking-wide text-gray-400">Organization</dt><dd className="mt-1 break-words font-semibold text-gray-900">{organizationLabel(log)}</dd></div>
+        </dl>
+        {log.details.length > 0 && <section className="mt-5 rounded-lg border border-gray-200 bg-gray-50 p-4"><h3 className="text-sm font-black text-gray-950">Safe event details</h3><ul className="mt-2 space-y-1 text-sm text-gray-700">{log.details.map((detail) => <li key={detail}>{detail}</li>)}</ul></section>}
+        <p className="mt-5 text-xs text-gray-500">Raw request data, before/after values, emails, tokens, and tenant CRM data are not available from this view.</p>
+      </div>
+    </div>
+  );
 }
 
 export function AuditLogsModule() {
   const searchParams = useSearchParams();
-  const organizationFilter = searchParams.get('organizationId') || '';
-  return <OrganizationAuditLogs key={organizationFilter} organizationFilter={organizationFilter} />;
+  const initialOrganizationId = searchParams.get('organizationId') || '';
+  return <ScopedAuditLogs key={initialOrganizationId} initialOrganizationId={initialOrganizationId} />;
 }
 
-function OrganizationAuditLogs({ organizationFilter }: { organizationFilter: string }) {
-  const [logs, setLogs] = useState<ConsoleAuditLog[]>([]);
+function ScopedAuditLogs({ initialOrganizationId }: { initialOrganizationId: string }) {
+  const requestId = useRef(0);
+  const [draft, setDraft] = useState<AuditFilterDraft>(() => initialFilters(initialOrganizationId));
+  const [filters, setFilters] = useState<PlatformAuditLogFilters>(() => appliedFilters(initialFilters(initialOrganizationId)));
+  const [logs, setLogs] = useState<PlatformAuditLogItem[]>([]);
+  const [selectedLog, setSelectedLog] = useState<PlatformAuditLogItem | null>(null);
   const [cursor, setCursor] = useState<string | undefined>();
   const [nextCursor, setNextCursor] = useState<string | undefined>();
   const [cursorHistory, setCursorHistory] = useState<Array<string | undefined>>([]);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const requestId = useRef(0);
 
   const load = useCallback(async (pageCursor?: string) => {
     const currentRequest = ++requestId.current;
     setLoading(true);
     setError(null);
+    setSelectedLog(null);
     try {
-      const result = await getAuditLogs(PAGE_SIZE, pageCursor, organizationFilter || undefined);
+      const result = await getAuditLogs(PAGE_SIZE, pageCursor, filters);
       if (currentRequest !== requestId.current) return;
       setLogs(result.items);
       setNextCursor(result.nextCursor);
     } catch (reason) {
       if (currentRequest === requestId.current) setError(reason instanceof Error ? reason.message : 'Unable to load audit logs.');
-    } finally { if (currentRequest === requestId.current) setLoading(false); }
-  }, [organizationFilter]);
+    } finally {
+      if (currentRequest === requestId.current) setLoading(false);
+    }
+  }, [filters]);
+
+  const invalidateRequest = useCallback(() => { requestId.current++; }, []);
 
   // Audit data loading is an external synchronization; the state updates are intentional here.
   // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { void load(cursor); return () => { requestId.current += 1; }; }, [cursor, load]);
+  useEffect(() => { void load(cursor); return invalidateRequest; }, [cursor, load, invalidateRequest]);
 
-  const visibleLogs = logs;
+  const updateDraft = (field: keyof AuditFilterDraft, value: string) => setDraft((current) => ({ ...current, [field]: value }));
+  const apply = (event: React.FormEvent) => {
+    event.preventDefault();
+    setCursorHistory([]);
+    setCursor(undefined);
+    setPage(1);
+    setFilters(appliedFilters(draft));
+  };
+  const clear = () => {
+    const next = initialFilters('');
+    setDraft(next);
+    setFilters({});
+    setCursorHistory([]);
+    setCursor(undefined);
+    setPage(1);
+  };
+  const clearOrganizationScope = () => {
+    const next = { ...draft, organizationId: '' };
+    setDraft(next);
+    setFilters(appliedFilters(next));
+    setCursorHistory([]);
+    setCursor(undefined);
+    setPage(1);
+  };
   const previous = () => {
     const previousCursor = cursorHistory.at(-1);
     setCursorHistory((history) => history.slice(0, -1));
@@ -66,16 +164,55 @@ function OrganizationAuditLogs({ organizationFilter }: { organizationFilter: str
     setCursor(nextCursor);
     setPage((value) => value + 1);
   };
+  const hasFilters = Object.keys(filters).length > 0;
+  const hasOrganizationScope = Boolean(draft.organizationId);
 
   if (loading && !logs.length) return <LoadingState />;
-  if (error) return <ErrorState message={error} />;
 
-  return <div className="space-y-3">
-    {organizationFilter && <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800"><span>Showing activity for organization <strong>{organizationFilter}</strong>.</span><a href="/audit-logs" className="font-bold underline underline-offset-2">Clear filter</a></div>}
-    {!visibleLogs.length ? <EmptyState title="No audit activity" message={organizationFilter ? 'No activity has been recorded for this organization.' : 'Administrative actions will appear here once recorded.'} /> : <>
-      <div className="hidden overflow-x-auto rounded-xl border border-gray-200 bg-white md:block"><table className="w-full min-w-[1050px] table-fixed text-left text-sm"><thead className="border-b border-gray-200 bg-gray-50 text-[10px] uppercase tracking-wide text-gray-500"><tr><th className="w-[17%] px-3 py-2">Action</th><th className="w-[19%] px-3 py-2">Admin</th><th className="w-[17%] px-3 py-2">Target</th><th className="w-[14%] px-3 py-2">Organization</th><th className="w-[13%] px-3 py-2">Previous</th><th className="w-[13%] px-3 py-2">New</th><th className="w-[7%] px-3 py-2">Created</th></tr></thead><tbody className="divide-y divide-gray-100">{visibleLogs.map((log) => <tr key={log.id} className="h-14 hover:bg-gray-50"><td className="px-3 py-2"><CompactBadge label={log.action || 'UNKNOWN'} tone={actionTone(log.action)} /></td><td className="px-3 py-2"><TruncatedText value={log.actorEmail} className="font-semibold" /><TruncatedText value={log.actorRole} className="text-xs text-gray-500" /></td><td className="px-3 py-2"><TruncatedText value={`${log.targetType || '—'}${log.targetId ? ` · ${log.targetId}` : ''}`} /></td><td className="px-3 py-2"><TruncatedText value={log.organizationId} className="text-gray-600" /></td><td className="px-3 py-2 text-xs text-gray-500"><TruncatedText value={summarize(log.previousValue)} /></td><td className="px-3 py-2 text-xs text-gray-500"><TruncatedText value={summarize(log.newValue)} /></td><td className="whitespace-nowrap px-3 py-2 text-xs text-gray-500">{formatDate(log.createdAt)}</td></tr>)}</tbody></table></div>
-      <div className="space-y-3 md:hidden">{visibleLogs.map((log) => <article key={log.id} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm"><div className="flex items-start justify-between gap-3"><CompactBadge label={log.action || 'UNKNOWN'} tone={actionTone(log.action)} /><span className="shrink-0 text-xs text-gray-500">{formatDate(log.createdAt)}</span></div><dl className="mt-3 grid grid-cols-2 gap-3 text-sm"><div><dt className="text-xs text-gray-400">Admin</dt><dd className="truncate font-semibold" title={log.actorEmail}>{log.actorEmail || '—'}</dd></div><div><dt className="text-xs text-gray-400">Target</dt><dd className="truncate" title={log.targetId}>{log.targetType || '—'}{log.targetId ? ` · ${log.targetId}` : ''}</dd></div><div><dt className="text-xs text-gray-400">Organization</dt><dd className="truncate" title={log.organizationId}>{log.organizationId || '—'}</dd></div><div><dt className="text-xs text-gray-400">Actor role</dt><dd>{log.actorRole || '—'}</dd></div></dl><div className="mt-3 grid gap-2 text-xs"><p className="truncate text-gray-500" title={summarize(log.previousValue)}>Previous: {summarize(log.previousValue)}</p><p className="truncate text-gray-500" title={summarize(log.newValue)}>New: {summarize(log.newValue)}</p></div></article>)}</div>
-    </>}
-    <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2"><span className="text-xs font-semibold text-gray-500">Page {page}{loading ? ' · Loading…' : ''}</span><div className="flex items-center gap-2"><CompactIconButton label="Previous audit log page" onClick={previous} disabled={loading || page === 1}><ChevronLeft className="h-4 w-4" aria-hidden="true" /></CompactIconButton><CompactIconButton label="Next audit log page" onClick={next} disabled={loading || !nextCursor}><ChevronRight className="h-4 w-4" aria-hidden="true" /></CompactIconButton></div></div>
-  </div>;
+  return (
+    <div className="space-y-4">
+      <form onSubmit={apply} className="rounded-xl border border-gray-200 bg-white p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="flex items-center gap-2 font-black text-gray-950"><Filter className="h-4 w-4" aria-hidden="true" />Audit filters</h2>
+            <p className="mt-1 text-xs text-gray-500">Filters are evaluated server-side against a bounded audit window.</p>
+          </div>
+          {hasFilters && <button type="button" onClick={clear} className="text-xs font-bold text-blue-700 hover:underline">Clear filters</button>}
+        </div>
+        {hasOrganizationScope && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-900"><span><strong>Organization scope active.</strong> Activity is restricted to the selected workspace.</span><button type="button" onClick={clearOrganizationScope} className="text-xs font-bold text-blue-800 hover:underline">Remove scope</button></div>}
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <label className="text-xs font-bold text-gray-600">From<input type="date" value={draft.dateFrom} onChange={(event) => updateDraft('dateFrom', event.target.value)} className="mt-1 block w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-normal text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" /></label>
+          <label className="text-xs font-bold text-gray-600">To<input type="date" value={draft.dateTo} onChange={(event) => updateDraft('dateTo', event.target.value)} className="mt-1 block w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-normal text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" /></label>
+          <label className="text-xs font-bold text-gray-600">Event / action<input value={draft.action} onChange={(event) => updateDraft('action', event.target.value)} placeholder="SUBSCRIPTION_PLAN_UPDATED" className="mt-1 block w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-normal text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" /></label>
+          <label className="text-xs font-bold text-gray-600">Actor role<select value={draft.actorRole} onChange={(event) => updateDraft('actorRole', event.target.value)} className="mt-1 block w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-normal text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500"><option value="">All roles</option><option value="SUPER_ADMIN">SUPER_ADMIN</option><option value="SUPPORT">SUPPORT</option><option value="ORGANIZATION_ADMIN">ORGANIZATION_ADMIN</option><option value="SYSTEM">SYSTEM</option></select></label>
+          <label className="text-xs font-bold text-gray-600">Target type<select value={draft.targetType} onChange={(event) => updateDraft('targetType', event.target.value)} className="mt-1 block w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-normal text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500"><option value="">All target types</option><option value="ORGANIZATION">ORGANIZATION</option><option value="ORGANIZATION_LICENSE">ORGANIZATION_LICENSE</option><option value="ORGANIZATION_USAGE">ORGANIZATION_USAGE</option><option value="ORGANIZATION_MEMBER">ORGANIZATION_MEMBER</option><option value="ORGANIZATION_INVITATION">ORGANIZATION_INVITATION</option><option value="SUBSCRIPTION_PLAN">SUBSCRIPTION_PLAN</option><option value="SUBSCRIPTION_PLAN_CATALOG">SUBSCRIPTION_PLAN_CATALOG</option><option value="PLATFORM_ADMIN">PLATFORM_ADMIN</option></select></label>
+        </div>
+        <div className="mt-4"><button type="submit" className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-bold text-white hover:bg-blue-800 focus:outline-none focus:ring-2 focus:ring-blue-500">Apply filters</button></div>
+      </form>
+
+      {error && <ErrorState message={error} />}
+      {!loading && !error && !logs.length ? <EmptyState title="No matching audit activity" message="Try broadening the server-side filters or select another date range." /> : (
+        <>
+          {logs.length > 0 && (
+            <>
+              <div className="hidden overflow-x-auto rounded-xl border border-gray-200 bg-white md:block">
+                <table className="w-full min-w-[980px] table-fixed text-left text-sm">
+                  <thead className="border-b border-gray-200 bg-gray-50 text-[10px] uppercase tracking-wide text-gray-500"><tr><th className="w-[13%] px-3 py-2">Timestamp</th><th className="w-[21%] px-3 py-2">Action</th><th className="w-[12%] px-3 py-2">Actor role</th><th className="w-[17%] px-3 py-2">Organization</th><th className="w-[19%] px-3 py-2">Target</th><th className="w-[10%] px-3 py-2">Result</th><th className="w-[8%] px-3 py-2"><span className="sr-only">Details</span></th></tr></thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {logs.map((log) => <tr key={log.id} className="h-14 hover:bg-gray-50"><td className="whitespace-nowrap px-3 py-2 text-xs text-gray-500">{formatDate(log.createdAt)}</td><td className="px-3 py-2"><CompactBadge label={log.action} tone={actionTone(log.action)} /></td><td className="px-3 py-2"><TruncatedText value={log.actorRole} className="font-semibold" /></td><td className="px-3 py-2"><OrganizationCell log={log} /></td><td className="px-3 py-2"><TruncatedText value={targetLabel(log)} /></td><td className="px-3 py-2">{log.result ? <CompactBadge label={log.result} tone={resultTone(log.result)} /> : '—'}</td><td className="px-3 py-2"><CompactIconButton label={`View ${log.action} audit details`} onClick={() => setSelectedLog(log)}>Details</CompactIconButton></td></tr>)}
+                  </tbody>
+                </table>
+              </div>
+              <div className="space-y-3 md:hidden">
+                {logs.map((log) => <article key={log.id} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm"><div className="flex items-start justify-between gap-3"><CompactBadge label={log.action} tone={actionTone(log.action)} /><span className="shrink-0 text-xs text-gray-500">{formatDate(log.createdAt)}</span></div><dl className="mt-3 grid grid-cols-2 gap-3 text-sm"><div><dt className="text-xs text-gray-400">Actor role</dt><dd className="truncate font-semibold" title={log.actorRole}>{log.actorRole}</dd></div><div><dt className="text-xs text-gray-400">Target</dt><dd className="truncate" title={targetLabel(log)}>{targetLabel(log)}</dd></div><div><dt className="text-xs text-gray-400">Organization</dt><dd className="truncate">{organizationLabel(log)}</dd></div><div><dt className="text-xs text-gray-400">Result</dt><dd>{log.result || '—'}</dd></div></dl><button type="button" onClick={() => setSelectedLog(log)} className="mt-4 text-xs font-bold text-blue-700 hover:underline">View safe details</button></article>)}
+              </div>
+            </>
+          )}
+        </>
+      )}
+
+      <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2"><span className="text-xs font-semibold text-gray-500">Page {page} · {logs.length} event{logs.length === 1 ? '' : 's'} shown · up to {PAGE_SIZE} per page{loading ? ' · Loading…' : ''}</span><div className="flex items-center gap-2"><CompactIconButton label="Previous audit log page" onClick={previous} disabled={loading || page === 1}><ChevronLeft className="h-4 w-4" aria-hidden="true" /></CompactIconButton><CompactIconButton label="Next audit log page" onClick={next} disabled={loading || !nextCursor}><ChevronRight className="h-4 w-4" aria-hidden="true" /></CompactIconButton></div></div>
+      <AuditDetailDialog log={selectedLog} onClose={() => setSelectedLog(null)} />
+    </div>
+  );
 }

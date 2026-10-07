@@ -1,90 +1,238 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Archive, ArrowLeft, CircleCheck, History, PauseCircle, Pencil, RefreshCw, RotateCcw } from 'lucide-react';
-import { ConsoleApiError, getOrganization, lookupOrganizationUser, updateOrganizationProfile } from '@/lib/console-api';
-import type { LicenseActionPayload, Organization, OrganizationMember } from '@/lib/types';
-import { useLicenseAdminActions } from '@/lib/use-license-admin-actions';
-import { MemberAdminAction, MemberAdminPayload, useOrganizationMemberAdmin } from '@/lib/use-organization-member-admin';
-import { ConsolePage } from '../ConsoleShell';
-import { CompactActionGroup, CompactBadge, CompactIconButton, ErrorState, formatDateInTimeZone, LoadingState, TruncatedText } from './ConsolePrimitives';
-import { LicenseAction, LicenseActionDialog, licenseActionLabel } from './LicenseActionDialog';
-import { AddMemberDialog, MemberAccessDialog, MemberActionConfirmDialog, OrganizationProfileDialog } from './OrganizationAdminDialogs';
-import { OrganizationUsageSection } from './OrganizationUsageSection';
+import { ArrowLeft, ExternalLink, RefreshCw } from 'lucide-react';
+import { getOrganization, resetOrganizationRegistration, type OrganizationRegistrationResetMode } from '@/lib/console-api';
+import type { OrganizationOperationsDetail, OrganizationRegistryEntry } from '@/lib/types';
 import { useAuth } from '@/lib/auth-context';
+import { ConsolePage } from '../ConsoleShell';
+import { CompactBadge, EmptyState, ErrorState, formatDate, LoadingState } from './ConsolePrimitives';
+import { OrganizationUsageSection } from './OrganizationUsageSection';
+import { OrganizationRegistrationResetDialog } from './OrganizationRegistrationResetDialog';
 
-type MemberFilter = 'ACTIVE' | 'PENDING' | 'SUSPENDED' | 'ARCHIVED' | 'ALL';
+function visibleLicenseStatus(record: OrganizationRegistryEntry) {
+  if (record.licenseDocumentState === 'NO_LICENSE') return 'NO_LICENSE';
+  if (record.licenseDocumentState === 'INVALID_LICENSE') return 'NEEDS_ATTENTION';
+  return record.licenseStatus;
+}
 
-function memberStatus(member: OrganizationMember) { return member.status.toLowerCase(); }
-function humanMemberStatus(member: OrganizationMember) { const value = memberStatus(member); return value.charAt(0).toUpperCase() + value.slice(1); }
-function loginStatusLabel(member: OrganizationMember) { return member.lastLoginStatus === 'SUCCESS' ? 'Successful' : member.lastLoginStatus === 'FAILED' ? 'Failed' : 'No login yet'; }
-function loginStatusTone(member: OrganizationMember): 'neutral' | 'success' | 'danger' { return member.lastLoginStatus === 'SUCCESS' ? 'success' : member.lastLoginStatus === 'FAILED' ? 'danger' : 'neutral'; }
+function statusTone(status: ReturnType<typeof visibleLicenseStatus>) {
+  if (status === 'ACTIVE') return 'success' as const;
+  if (status === 'TRIAL') return 'info' as const;
+  if (status === 'EXPIRED' || status === 'SUSPENDED') return 'danger' as const;
+  return 'warning' as const;
+}
+
+function platformTone(status: OrganizationRegistryEntry['platformStatus']) {
+  return status === 'HEALTHY' ? 'success' as const : status === 'WARNING' ? 'warning' as const : 'danger' as const;
+}
+
+function planLabel(record: OrganizationRegistryEntry) {
+  return record.planName || record.canonicalPlan || 'No plan';
+}
+
+function money(value: number | null, currency?: string) {
+  if (value === null || value === undefined || !currency) return '—';
+  try { return new Intl.NumberFormat('en-US', { style: 'currency', currency, maximumFractionDigits: 2 }).format(value); }
+  catch { return `${currency} ${value}`; }
+}
+
+function auditLabel(action: string) {
+  return action.replace(/^ORGANIZATION_/, '').replace(/^SUBSCRIPTION_/, '').replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function auditTone(action: string) {
+  if (action.includes('SUSPENDED') || action.includes('EXPIRED')) return 'danger' as const;
+  if (action.includes('ACTIVATED') || action.includes('RENEWED') || action.includes('REACTIVATED')) return 'success' as const;
+  return 'info' as const;
+}
+
+function seatAvailability(record: OrganizationRegistryEntry) {
+  if (record.maxUsers === null) return 'No seat limit';
+  const remaining = record.maxUsers - record.activeSeatCount;
+  if (remaining < 0) return `${Math.abs(remaining)} over limit`;
+  return `${remaining} seat${remaining === 1 ? '' : 's'} available`;
+}
+
+function DetailField({ label, value, mono = false }: { label: string; value: React.ReactNode; mono?: boolean }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{label}</dt>
+      <dd className={`mt-1 break-words text-sm text-gray-800 ${mono ? 'font-mono text-xs' : ''}`}>{value || '—'}</dd>
+    </div>
+  );
+}
 
 export function OrganizationDetailModule({ orgId }: { orgId: string }) {
-  const router = useRouter();
   const { platformAdmin } = useAuth();
-  const [org, setOrg] = useState<Organization | null>(null);
-  const [members, setMembers] = useState<OrganizationMember[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<LicenseAction | null>(null);
-  const [profileOpen, setProfileOpen] = useState(false);
-  const [addOpen, setAddOpen] = useState(false);
-  const [selectedMember, setSelectedMember] = useState<OrganizationMember | null>(null);
-  const [pendingMemberAction, setPendingMemberAction] = useState<{ action: 'SUSPEND_MEMBER' | 'REACTIVATE_MEMBER' | 'ARCHIVE_MEMBER' | 'RESTORE_MEMBER'; member: OrganizationMember } | null>(null);
-  const [memberFilter, setMemberFilter] = useState<MemberFilter>('ACTIVE');
-  const [profileBusy, setProfileBusy] = useState(false);
-  const [profileMessage, setProfileMessage] = useState<string | null>(null);
   const isSuperAdmin = platformAdmin?.role === 'SUPER_ADMIN';
-  const load = useCallback(async () => { setError(null); const result = await getOrganization(orgId); setOrg(result.organization); setMembers(result.members); }, [orgId]);
-  // Data loading is an external synchronization; the state updates are intentional here.
+  const router = useRouter();
+  const [detail, setDetail] = useState<OrganizationOperationsDetail | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+  // Clear privileged drafts when the external authorization profile changes.
   // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { void load().catch((e) => setError(e instanceof Error ? e.message : 'Unable to load organization.')); }, [load]);
-  const { busy: licenseBusy, message: licenseMessage, runAction } = useLicenseAdminActions({ organizationId: orgId, refresh: load, onConflict: () => setDialog(null) });
-  const { busy: memberBusy, message: memberMessage, runMemberAction: runMemberAdminAction } = useOrganizationMemberAdmin({ organizationId: orgId, refresh: load });
-  const visibleMembers = useMemo(() => memberFilter === 'ALL' ? members : members.filter((member) => memberStatus(member) === memberFilter.toLowerCase()), [memberFilter, members]);
+  useEffect(() => { if (!isSuperAdmin) { setResetOpen(false); setResetError(null); } }, [isSuperAdmin]);
 
-  const runProfileUpdate = async (payload: { name: string; businessType: string; currency: string; timezone: string; reason?: string }) => { setProfileBusy(true); setProfileMessage(null); try { await updateOrganizationProfile(orgId, payload); await load(); setProfileOpen(false); setProfileMessage('Organization profile updated successfully.'); } catch (e) { setProfileMessage(e instanceof Error ? e.message : 'The organization profile update failed.'); if (e instanceof ConsoleApiError && e.status === 409) await load().catch(() => undefined); } finally { setProfileBusy(false); } };
-  const invokeMemberAction = async (action: MemberAdminAction, member: OrganizationMember | null, payload: MemberAdminPayload = {}) => { const success = await runMemberAdminAction(action, member?.userId || member?.id, payload); if (success && (action === 'ADD_MEMBER' || action === 'ARCHIVE_MEMBER' || action === 'RESTORE_MEMBER')) { setSelectedMember(null); setAddOpen(false); } return success; };
-  const handleMemberSave = async (member: OrganizationMember, payload: MemberAdminPayload) => { if (await invokeMemberAction('UPDATE_MEMBER', member, payload)) setSelectedMember(null); };
-  const handleArchive = async (member: OrganizationMember) => { await invokeMemberAction('ARCHIVE_MEMBER', member, { reason: `Archived from organization ${orgId}.` }); };
-  const confirmMemberAction = async () => { if (!pendingMemberAction) return; const { action, member } = pendingMemberAction; if (await invokeMemberAction(action, member)) setPendingMemberAction(null); };
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try { setDetail(await getOrganization(orgId)); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to load the organization detail.'); }
+    finally { setLoading(false); }
+  }, [orgId]);
 
-  if (error) return <div className="p-6 lg:p-10"><ErrorState message={error} /></div>;
-  if (!org) return <LoadingState />;
+  // This is a read-only platform projection synchronized from the API.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { void load(); }, [load]);
 
-  const adminState = org.licenseAdminState;
-  const activeMembers = org.activeMemberCount ?? adminState?.activeMembers ?? 0;
-  const maxUsers = adminState?.maxUsers ?? null;
-  const activeAdmins = members.filter((member) => memberStatus(member) === 'active' && member.role === 'ADMIN').length;
-  const archivedMembers = members.filter((member) => memberStatus(member) === 'archived').length;
-  const pendingMembers = members.filter((member) => memberStatus(member) === 'pending').length;
-  const suspendedMembers = members.filter((member) => memberStatus(member) === 'suspended').length;
-  const humanStatus = org.licenseDocumentState === 'NO_LICENSE' ? 'No License' : org.licenseDocumentState === 'INVALID_LICENSE' ? 'Needs Attention' : adminState?.status === 'TRIAL' ? 'Trial' : adminState?.status === 'ACTIVE' ? 'Active' : adminState?.status === 'EXPIRED' ? 'Expired' : adminState?.status === 'SUSPENDED' ? 'Suspended' : 'Needs Attention';
-  const actions: LicenseAction[] = isSuperAdmin ? (adminState?.allowedActions || []) : [];
-  const licenseRows = [['Plan', adminState?.plan || '—'], ['Canonical', org.licenseDocumentState === 'VALID_LICENSE' ? 'Valid' : org.licenseDocumentState === 'INVALID_LICENSE' ? 'Invalid' : 'Missing'], ['Active members', activeMembers], ['Maximum users', maxUsers ?? '—'], ['Trial start', formatDateInTimeZone(org.license?.trialStartedAt, org.timezone)], ['Trial end', formatDateInTimeZone(org.license?.trialEndsAt, org.timezone)], ['Subscription start', formatDateInTimeZone(org.license?.subscriptionStartedAt, org.timezone)], ['Effective expiration', formatDateInTimeZone(adminState?.expiresAt || undefined, org.timezone)], ['Days remaining', adminState?.daysRemaining ?? '—']];
-  const viewHistory = () => router.push(`/audit-logs?organizationId=${encodeURIComponent(orgId)}`);
-  const submitLicenseAction = async (payload: LicenseActionPayload) => { if (dialog && await runAction(dialog, payload)) setDialog(null); };
-  const tabs: Array<{ value: MemberFilter; label: string; count: number }> = [{ value: 'ACTIVE', label: 'Active', count: activeMembers }, { value: 'PENDING', label: 'Pending', count: pendingMembers }, { value: 'SUSPENDED', label: 'Suspended', count: suspendedMembers }, { value: 'ARCHIVED', label: 'Archived', count: archivedMembers }, { value: 'ALL', label: 'All', count: members.length }];
-  const actionButtons = (member: OrganizationMember) => { const status = memberStatus(member); const identity = member.name || member.email || member.id; return <CompactActionGroup>{isSuperAdmin && status !== 'archived' && <CompactIconButton label={`Edit Member ${identity}`} onClick={() => setSelectedMember(member)} className="text-blue-700"><Pencil className="h-4 w-4" aria-hidden="true" /></CompactIconButton>}{isSuperAdmin && status === 'active' && <CompactIconButton label={`Suspend Access for ${identity}`} onClick={() => setPendingMemberAction({ action: 'SUSPEND_MEMBER', member })} disabled={memberBusy} className="border-amber-200 text-amber-700 hover:border-amber-300 hover:bg-amber-50"><PauseCircle className="h-4 w-4" aria-hidden="true" /></CompactIconButton>}{isSuperAdmin && ['active', 'pending', 'inactive', 'suspended'].includes(status) && <CompactIconButton label={`Archive Member ${identity}`} onClick={() => setPendingMemberAction({ action: 'ARCHIVE_MEMBER', member })} disabled={memberBusy} className="border-rose-200 text-rose-700 hover:border-rose-300 hover:bg-rose-50"><Archive className="h-4 w-4" aria-hidden="true" /></CompactIconButton>}{isSuperAdmin && ['pending', 'inactive', 'suspended'].includes(status) && <CompactIconButton label={`Reactivate Access for ${identity}`} onClick={() => setPendingMemberAction({ action: 'REACTIVATE_MEMBER', member })} disabled={memberBusy} className="border-emerald-200 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-50"><CircleCheck className="h-4 w-4" aria-hidden="true" /></CompactIconButton>}{isSuperAdmin && status === 'archived' && <CompactIconButton label={`Restore Member ${identity}`} onClick={() => setPendingMemberAction({ action: 'RESTORE_MEMBER', member })} disabled={memberBusy} className="border-emerald-200 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-50"><RotateCcw className="h-4 w-4" aria-hidden="true" /></CompactIconButton>}<CompactIconButton label={`View Audit History for ${identity}`} onClick={viewHistory}><History className="h-4 w-4" aria-hidden="true" /></CompactIconButton></CompactActionGroup>; };
+  const resetRegistration = useCallback(async ({ mode, confirmation }: { mode: OrganizationRegistrationResetMode; confirmation: string }) => {
+    setResetBusy(true);
+    setResetError(null);
+    try {
+      await resetOrganizationRegistration(orgId, { mode, confirmation });
+      router.replace('/organizations');
+    } catch (reason) {
+      setResetError(reason instanceof Error ? reason.message : 'The organization registration could not be reset.');
+    } finally { setResetBusy(false); }
+  }, [orgId, router]);
 
-  return <ConsolePage title={org.name} description={org.slug ? `/${org.slug}` : 'Organization details'} action={<div className="flex flex-wrap gap-4"><button type="button" onClick={() => void load()} aria-label="Refresh organization" className="flex items-center gap-2 text-sm font-bold text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"><RefreshCw className="h-4 w-4" />Refresh</button><button type="button" onClick={() => router.push('/organizations')} className="flex items-center gap-2 text-sm font-bold text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500"><ArrowLeft className="h-4 w-4" />Back</button></div>}>
-    <div className="space-y-6">
-      {(licenseMessage || memberMessage || profileMessage) && <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-800" role="status">{licenseMessage || memberMessage || profileMessage}</div>}
-      {org.licenseDocumentState === 'INVALID_LICENSE' && <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950"><p className="font-black">License requires attention</p><p className="mt-1">The canonical license record is incomplete or invalid. Repair the license before normal subscription actions can continue.</p><div className="mt-3 flex flex-wrap gap-2">{isSuperAdmin && <button type="button" onClick={() => setDialog('REPAIR_LICENSE')} className="rounded-lg bg-amber-700 px-3 py-2 text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-amber-500">Repair License</button>}<button type="button" onClick={viewHistory} className="rounded-lg border border-amber-300 px-3 py-2 text-xs font-bold text-amber-900 focus:outline-none focus:ring-2 focus:ring-amber-500">View Audit History</button></div></div>}
-      {org.organizationAdminState?.attentionReasons.some((reason) => ['MISSING_TIMEZONE', 'MISSING_CURRENCY'].includes(reason)) && <div className="rounded-xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-950"><p className="font-black">Organization setup warning</p><p className="mt-1">Set the organization timezone and currency for consistent local date and monetary presentation.</p></div>}
-      {isSuperAdmin && <section className="rounded-xl border border-blue-200 bg-blue-50/50 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-black text-blue-950">SUPER ADMIN CONTROLS</h2><p className="mt-1 text-sm text-blue-900/70">Operational controls for profile, licensing, subscriptions, and workspace members.</p></div><div className="flex flex-wrap gap-2"><button type="button" onClick={() => setProfileOpen(true)} className="rounded-lg bg-blue-700 px-3 py-2 text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-blue-500">Edit Organization</button><button type="button" onClick={viewHistory} className="rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-bold text-blue-800 focus:outline-none focus:ring-2 focus:ring-blue-500"><History className="mr-1 inline h-4 w-4" />View License History</button></div></div></section>}
-      <div className="grid gap-6 lg:grid-cols-2">
-        <section className="rounded-xl border border-gray-200 bg-white p-6"><div className="flex items-center justify-between gap-3"><h2 className="font-black">Organization Profile</h2>{org.organizationAdminState?.health !== 'HEALTHY' && <span className="text-xs font-bold text-amber-700">{org.organizationAdminState?.health === 'ACTION_REQUIRED' ? 'Action Required' : 'Warning'}</span>}</div><dl className="mt-5 grid grid-cols-2 gap-4 text-sm">{[['Business name', org.name], ['Slug', org.slug || '—'], ['Business type', org.businessType || '—'], ['Currency', org.currency || 'Not Set'], ['Timezone', org.timezone || 'Not Set'], ['Organization ID', org.id]].map(([label, value]) => <div key={label}><dt className="text-xs font-bold uppercase tracking-wider text-gray-400">{label}</dt><dd className="mt-1 break-words text-gray-800">{value}</dd></div>)}</dl></section>
-        <section id="license-card" className="rounded-xl border border-gray-200 bg-white p-6"><div className="flex items-center justify-between gap-3"><h2 className="font-black">Licensing & Subscription</h2><span className="rounded-full border border-gray-200 bg-gray-50 px-2 py-1 text-[10px] font-black uppercase tracking-wider text-gray-700">{humanStatus}</span></div><dl className="mt-5 grid grid-cols-2 gap-4 text-sm">{licenseRows.map(([label, value]) => <div key={label}><dt className="text-xs font-bold uppercase tracking-wider text-gray-400">{label}</dt><dd className="mt-1 text-gray-800">{value}</dd></div>)}</dl>{isSuperAdmin && <div className="mt-6 flex flex-wrap gap-2">{actions.map((item) => <button type="button" key={item} onClick={() => setDialog(item)} disabled={licenseBusy} className="rounded-lg border border-gray-200 px-3 py-2 text-[10px] font-black tracking-wider text-gray-700 hover:border-blue-400 hover:text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50">{licenseActionLabel(item)}</button>)}</div>}</section>
+  const record = detail?.organization;
+  const licenseStatus = useMemo(() => record ? visibleLicenseStatus(record) : 'UNKNOWN', [record]);
+
+  if (loading && !detail) return <LoadingState />;
+  if (error && !detail) return <div className="p-6 lg:p-10"><ErrorState message={error} /></div>;
+  if (!detail || !record) return <div className="p-6 lg:p-10"><EmptyState title="Organization unavailable" message="The platform API did not return this organization." /></div>;
+
+  const auditHref = `/audit-logs?organizationId=${encodeURIComponent(record.organizationId)}`;
+
+  return (
+    <ConsolePage
+      title={record.organizationName}
+      description="Platform-safe workspace profile, subscription state, access, and operational usage."
+      action={(
+        <div className="flex flex-wrap gap-4">
+          <button type="button" onClick={() => void load()} aria-label="Refresh organization" disabled={loading} className="flex items-center gap-2 text-sm font-bold text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50">
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} aria-hidden="true" />
+            Refresh
+          </button>
+          <Link href="/organizations" className="flex items-center gap-2 text-sm font-bold text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+            All organizations
+          </Link>
+        </div>
+      )}
+    >
+      <div className="space-y-6">
+        {error && <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900" role="status">{error}</div>}
+        {platformAdmin?.role === 'SUPPORT' && <p className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">SUPPORT access is read-only. Authorized subscription actions are available only to SUPER_ADMIN in Licensing.</p>}
+        <p className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">This profile is limited to organization registration, licensing, access, and operational estimates. It never loads customer CRM record contents.</p>
+
+        <div className="grid gap-6 lg:grid-cols-2">
+          <section className="rounded-xl border border-gray-200 bg-white p-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="font-black text-gray-950">Workspace profile</h2>
+                <p className="mt-1 text-sm text-gray-500">Platform-owned registration and access context.</p>
+              </div>
+              <CompactBadge label={record.platformStatus.replaceAll('_', ' ')} tone={platformTone(record.platformStatus)} />
+            </div>
+            <dl className="mt-5 grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
+              <DetailField label="Business / workspace" value={record.organizationName} />
+              <DetailField label="Workspace reference" value={record.platformMetadata.workspaceSlug || 'Centralized workspace'} mono={Boolean(record.platformMetadata.workspaceSlug)} />
+              <DetailField label="Created" value={formatDate(record.createdAt)} />
+              <DetailField label="Platform status" value={record.platformStatus.replaceAll('_', ' ')} />
+              <DetailField label="Members in use" value={`${record.activeSeatCount} active`} />
+              <DetailField label="Seat availability" value={seatAvailability(record)} />
+            </dl>
+            <div className="mt-6 flex flex-wrap gap-2 border-t border-gray-100 pt-4">
+              <Link href={`/users?organizationId=${encodeURIComponent(record.organizationId)}`} className="inline-flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-bold text-blue-800 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                Members &amp; access
+                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+              </Link>
+              <Link href={auditHref} className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-gray-700 hover:border-blue-300 hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                View audit activity
+                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+              </Link>
+            </div>
+          </section>
+
+          <section id="subscription-card" className="rounded-xl border border-gray-200 bg-white p-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="font-black text-gray-950">License &amp; subscription</h2>
+                <p className="mt-1 text-sm text-gray-500">Canonical license state and the frozen subscription price snapshot.</p>
+              </div>
+              <CompactBadge label={licenseStatus.replaceAll('_', ' ')} tone={statusTone(licenseStatus)} />
+            </div>
+            <dl className="mt-5 grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
+              <DetailField label="Current plan" value={planLabel(record)} />
+              <DetailField label="Canonical license status" value={record.canonicalLicenseStatus || '—'} />
+              <DetailField label="License record" value={record.licenseDocumentState.replaceAll('_', ' ')} />
+              <DetailField label="Seats used / limit" value={`${record.activeSeatCount} / ${record.maxUsers ?? '—'}`} />
+              <DetailField label="Trial end" value={formatDate(record.trialEndsAt)} />
+              <DetailField label="Subscription start" value={formatDate(record.subscriptionStartedAt)} />
+              <DetailField label="Renewal date" value={formatDate(record.renewalDate || record.subscriptionEndsAt)} />
+              <DetailField label="Price snapshot" value={money(record.priceAtSubscription, record.currency)} />
+              <DetailField label="Currency" value={record.currency || '—'} />
+              <DetailField label="Billing interval" value={record.billingInterval || '—'} />
+            </dl>
+            <div className="mt-6 border-t border-gray-100 pt-4">
+              <Link href="/licensing" className="inline-flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-bold text-blue-800 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                Open licensing operations
+                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+              </Link>
+            </div>
+          </section>
+        </div>
+
+        <OrganizationUsageSection orgId={orgId} isSuperAdmin={platformAdmin?.role === 'SUPER_ADMIN'} />
+
+        {platformAdmin?.role === 'SUPER_ADMIN' && (
+          <section className="rounded-xl border border-rose-200 bg-rose-50 p-6">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <h2 className="font-black text-rose-950">Test registration reset</h2>
+                <p className="mt-1 max-w-2xl text-sm text-rose-900">Permanently remove this organization’s scoped Firestore records and signup links so it can be tested as a new registration. Full reset can also free member emails only when server-side safety checks prove those accounts have no other platform access.</p>
+              </div>
+              <button type="button" onClick={() => { setResetError(null); setResetOpen(true); }} disabled={resetBusy} className="rounded-lg border border-rose-300 bg-white px-4 py-2 text-sm font-bold text-rose-800 hover:bg-rose-100 focus:outline-none focus:ring-2 focus:ring-rose-500 disabled:opacity-50">Reset registration</button>
+            </div>
+          </section>
+        )}
+
+        <section className="rounded-xl border border-gray-200 bg-white p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="font-black text-gray-950">Recent platform activity</h2>
+              <p className="mt-1 text-sm text-gray-500">Latest relevant organization and license events. Raw audit values and identities remain redacted.</p>
+            </div>
+            <Link href={auditHref} className="text-xs font-bold text-blue-700 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500">View all activity</Link>
+          </div>
+          {detail.auditHistory.length ? (
+            <ol className="mt-5 divide-y divide-gray-100 rounded-lg border border-gray-100">
+              {detail.auditHistory.map((item) => (
+                <li key={item.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+                  <div className="min-w-0">
+                    <CompactBadge label={auditLabel(item.action)} tone={auditTone(item.action)} />
+                    <p className="mt-1 text-xs text-gray-500">{item.actorRole || 'Platform service'}</p>
+                  </div>
+                  <time className="shrink-0 text-xs text-gray-500">{formatDate(item.createdAt)}</time>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <div className="mt-5"><EmptyState title="No recent platform activity" message="Future organization and subscription operations will appear here when they are recorded." /></div>
+          )}
+          <p className="mt-4 text-xs text-gray-500">Showing up to five recent events. The complete, cursor-paged history is available in Audit Logs.</p>
+        </section>
+
+        {platformAdmin?.role === 'SUPER_ADMIN' && resetOpen && <OrganizationRegistrationResetDialog organizationId={record.organizationId} busy={resetBusy} error={resetError} onClose={() => { if (!resetBusy) { setResetOpen(false); setResetError(null); } }} onConfirm={(payload) => void resetRegistration(payload)} />}
       </div>
-      <OrganizationUsageSection orgId={orgId} isSuperAdmin={isSuperAdmin} />
-      <section id="members-card" className="rounded-xl border border-gray-200 bg-white p-6"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="font-black">Members & Access</h2><p className="mt-1 text-sm text-gray-500">Organization membership only; platform administrator roles are separate.</p></div>{isSuperAdmin && <button type="button" onClick={() => setAddOpen(true)} className="rounded-lg bg-blue-700 px-3 py-2 text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-blue-500">Add Member</button>}</div><div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4"><div className="rounded-lg bg-gray-50 p-3"><p className="text-xs text-gray-500">Active Users</p><p className="mt-1 text-xl font-black">{activeMembers}</p></div><div className="rounded-lg bg-gray-50 p-3"><p className="text-xs text-gray-500">Seat Limit</p><p className="mt-1 text-xl font-black">{maxUsers ?? '—'}</p></div><div className="rounded-lg bg-gray-50 p-3"><p className="text-xs text-gray-500">Available Seats</p><p className="mt-1 text-xl font-black">{maxUsers === null ? '—' : Math.max(0, maxUsers - activeMembers)}</p></div><div className="rounded-lg bg-gray-50 p-3"><p className="text-xs text-gray-500">Active Admins</p><p className="mt-1 text-xl font-black">{activeAdmins}</p></div></div><div className="mt-5 flex flex-wrap gap-2" role="tablist" aria-label="Member access filters">{tabs.map((tab) => <button type="button" role="tab" aria-selected={memberFilter === tab.value} key={tab.value} onClick={() => setMemberFilter(tab.value)} className={`rounded-lg px-3 py-2 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-blue-500 ${memberFilter === tab.value ? 'bg-blue-700 text-white' : 'border border-gray-200 text-gray-700'}`}>{tab.label} <span className="ml-1 opacity-70">{tab.count}</span></button>)}</div><div className="mt-4 hidden overflow-x-auto md:block"><table className="w-full min-w-[1100px] table-fixed text-left text-sm"><thead className="border-b border-gray-200 text-[10px] uppercase tracking-wide text-gray-400"><tr><th className="w-[18%] px-3 py-2">Name</th><th className="w-[22%] px-3 py-2">Email</th><th className="w-[12%] px-3 py-2">Role</th><th className="w-[12%] px-3 py-2">Access</th><th className="w-[15%] px-3 py-2">Last Login</th><th className="w-[13%] px-3 py-2">Login Status</th><th className="w-[20%] px-3 py-2">Actions</th></tr></thead><tbody className="divide-y divide-gray-100">{visibleMembers.map((member) => { const identity = member.name || member.email || member.id; const status = humanMemberStatus(member); return <tr key={member.id} className="h-14 hover:bg-gray-50"><td className="min-w-0 px-3 py-2 font-semibold"><TruncatedText value={identity} /></td><td className="px-3 py-2"><TruncatedText value={member.email} className="text-gray-600" /></td><td className="px-3 py-2"><CompactBadge label={member.role} tone="info" /></td><td className="px-3 py-2"><CompactBadge label={status} tone={memberStatus(member) === 'active' ? 'success' : memberStatus(member) === 'archived' ? 'danger' : 'warning'} /></td><td className="px-3 py-2 whitespace-nowrap">{member.lastLoginAt ? formatDateInTimeZone(member.lastLoginAt, org.timezone) : 'Never'}</td><td className="px-3 py-2"><CompactBadge label={loginStatusLabel(member)} tone={loginStatusTone(member)} /></td><td className="px-3 py-2">{actionButtons(member)}</td></tr>; })}</tbody></table></div><div className="mt-4 space-y-3 md:hidden">{visibleMembers.map((member) => { const identity = member.name || member.email || member.id; const status = humanMemberStatus(member); return <article key={member.id} className="rounded-lg border border-gray-200 p-4"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><TruncatedText value={identity} className="font-bold" />{member.name && <TruncatedText value={member.email} className="text-xs text-gray-500" />}</div><CompactBadge label={status} tone={memberStatus(member) === 'active' ? 'success' : memberStatus(member) === 'archived' ? 'danger' : 'warning'} /></div><dl className="mt-3 grid grid-cols-2 gap-3 text-sm"><div><dt className="text-xs text-gray-400">Role</dt><dd><CompactBadge label={member.role} tone="info" /></dd></div><div><dt className="text-xs text-gray-400">Last Login</dt><dd>{member.lastLoginAt ? formatDateInTimeZone(member.lastLoginAt, org.timezone) : 'Never'}</dd></div><div><dt className="text-xs text-gray-400">Login Status</dt><dd><CompactBadge label={loginStatusLabel(member)} tone={loginStatusTone(member)} /></dd></div></dl><div className="mt-3">{actionButtons(member)}</div></article>; })}</div></section>
-    </div>
-    {isSuperAdmin && dialog && <LicenseActionDialog action={dialog} organization={org} activeMembers={activeMembers} busy={licenseBusy} onClose={() => !licenseBusy && setDialog(null)} onSubmit={(payload) => void submitLicenseAction(payload)} />}
-    {isSuperAdmin && profileOpen && <OrganizationProfileDialog organization={org} busy={profileBusy} onClose={() => !profileBusy && setProfileOpen(false)} onSubmit={(payload) => void runProfileUpdate(payload)} />}
-    {isSuperAdmin && addOpen && <AddMemberDialog busy={memberBusy} onClose={() => !memberBusy && setAddOpen(false)} onLookup={(email) => lookupOrganizationUser(orgId, email)} onSubmit={(payload) => void invokeMemberAction('ADD_MEMBER', null, payload)} />}
-    {isSuperAdmin && selectedMember && <MemberAccessDialog member={selectedMember} activeMembers={activeMembers} maxUsers={maxUsers} timezone={org.timezone} busy={memberBusy} onClose={() => !memberBusy && setSelectedMember(null)} onSubmit={(payload) => void handleMemberSave(selectedMember, payload)} onArchive={() => void handleArchive(selectedMember)} />}
-    {isSuperAdmin && pendingMemberAction && <MemberActionConfirmDialog action={pendingMemberAction.action} member={pendingMemberAction.member} busy={memberBusy} onClose={() => !memberBusy && setPendingMemberAction(null)} onConfirm={confirmMemberAction} />}
-  </ConsolePage>;
+    </ConsolePage>
+  );
 }

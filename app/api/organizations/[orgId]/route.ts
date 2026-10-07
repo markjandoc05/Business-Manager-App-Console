@@ -1,17 +1,14 @@
 import { NextRequest } from 'next/server';
 import { errorResponse, successResponse } from '@/lib/server/api-error-response';
 import { requirePlatformAdmin } from '@/lib/server/platform-admin';
-import { getConsoleOrganization } from '@/lib/server/console-read-service';
-import { ApiError } from '@/lib/server/api-errors';
+import { getOrganizationOperationsDetail } from '@/lib/server/organization-operations-service';
 import { updateOrganizationProfile } from '@/lib/server/organization-admin-service';
 import { readJsonBody } from '@/lib/server/request';
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ orgId: string }> }) {
   try {
     await requirePlatformAdmin(request);
-    const result = await getConsoleOrganization((await params).orgId);
-    if (!result) throw new ApiError('NOT_FOUND', 'Organization not found.', 404);
-    return successResponse(result);
+    return successResponse(await getOrganizationOperationsDetail((await params).orgId));
   } catch (error) { return errorResponse(error); }
 }
 
