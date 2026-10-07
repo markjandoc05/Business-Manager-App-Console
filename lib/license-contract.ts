@@ -107,12 +107,19 @@ export function buildOrganizationLicenseMirror(license: CanonicalLicense, now = 
   return { ...enforcementMirrors(license, now), maxUsers: license.maxUsers };
 }
 
+/** Synchronize the existing Client lifecycle field during explicit license actions. */
+export function buildOrganizationLicenseState(license: CanonicalLicense, now = Date.now()) {
+  const mirrors = buildOrganizationLicenseMirror(license, now);
+  const status = ({ TRIAL: 'trial', ACTIVE: 'active', EXPIRED: 'expired', SUSPENDED: 'suspended' } as const)[mirrors.licenseStatus];
+  return { ...mirrors, status };
+}
+
 export function compareOrganizationLicenseMirror(license: CanonicalLicense | null, organization: Record<string, unknown>, now = Date.now()) {
   if (!license) return { status: 'DRIFTED' as const, differences: [{ field: 'license/current', expected: 'valid canonical license', actual: null }] };
-  const expected = buildOrganizationLicenseMirror(license, now);
+  const expected = buildOrganizationLicenseState(license, now);
   const differences = Object.keys(expected).flatMap((field) => {
     const actual = organization[field];
-    const expectedValue = expected[field as keyof OrganizationLicenseMirror];
+    const expectedValue = expected[field as keyof typeof expected];
     const expectedMillis = expectedValue && typeof expectedValue === 'object' && 'toMillis' in expectedValue && typeof expectedValue.toMillis === 'function' ? expectedValue.toMillis() : undefined;
     const actualMillis = actual && typeof actual === 'object' && 'toMillis' in actual && typeof actual.toMillis === 'function' ? actual.toMillis() : undefined;
     const sameTimestamp = expectedMillis !== undefined && actualMillis !== undefined

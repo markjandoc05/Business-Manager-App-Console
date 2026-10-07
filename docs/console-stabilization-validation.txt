@@ -1,0 +1,48 @@
+Console existing-workflow stabilization — release prerequisites
+
+Patch preparation starts from feature52e311d. It does not select the deployment
+baseline, recreate unpublished Mac work or authorize production writes/deployment.
+
+Explicit license actions now synchronize the existing Client root lifecycle status
+with effective license state in the canonical/mirror/audit transaction. Unknown or
+missing root states fail closed for reconciliation; no data backfill is included.
+The existing repair CLI still refuses lifecycle drift and is not run by tests.
+Expired-trial conversion policy, plan pricing/seats/features and read/write roles
+are unchanged. Revoked-token checking applies to the shared server verifier.
+
+Usage remains an operational PARTIAL estimate of the original collections and
+organization-scoped files. Missing file configuration or unverified legacy summaries
+show unavailable file usage, with no percentage/healthy zero. Provider/metadata
+failures preserve previous summaries. This is not billing, full Firestore storage
+measurement, quota enforcement or a change to entitlements.
+
+Audit organization filtering is performed before cursor pagination. Before any
+rollout, merge docs/console-stabilization-required-indexes.json into the FINAL
+reviewed shared Client index artifact; preserve every other index/field override.
+This file is an index DELTA, not a replacement deploy manifest. firebase.json still
+references the sibling Client artifact. No rules/index deployment was performed.
+Queries fail with the existing index-unavailable response until the index exists.
+
+Existing organizations/memberships/detail/dashboard interfaces remain complete.
+Individual list queries page by document ID in batches of100; row processing uses
+at most5 concurrent readers. Responses and total work still scale with all rows;
+this patch does not claim bounded total response size, snapshot consistency or
+pilot-scale latency acceptance. Changes during multi-query scans remain possible.
+
+Admin profile subscription updates current role/status. Lost mutation roles hide
+already-open privileged controls in the existing modules. Server roles are still
+rechecked on every API request; the UI subscription is not an authorization boundary.
+
+Run existing pure tests plus console-stabilization.test.mjs and
+console-admin-profile.test.mjs; then lint, sequential TypeScript/build and browser
+smoke. Run test:license:emulator only with guarded demo-bsm-console and loopback
+Auth/Firestore. New native revoked/disabled checks supplement synthetic regression:
+Firebase Admin Auth emulator checks revocation even without true, so emulator tests
+alone cannot prove the production checkRevoked regression. Native checks are unrun
+in cloud while the trusted official emulator download is blocked by CONNECT403.
+
+Release gates: reconcile Mac-only Platformv1/code and choose immutable compatible
+Client/Console/platform artifacts; merge/validate required shared index; native role,
+revocation/license/usage/audit transaction and authenticated browser tests; legacy
+root/license/status reconciliation; measured scale and operator trial/paid recovery.
+No checkout/webhooks/new modules or expired-trial policy changes are included.

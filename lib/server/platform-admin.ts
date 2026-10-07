@@ -15,7 +15,7 @@ export async function requirePlatformAdminToken(token: string, roles: PlatformAd
 
   let decoded;
   try {
-    decoded = await adminAuth.verifyIdToken(token);
+    decoded = await adminAuth.verifyIdToken(token, true);
   } catch {
     throw new ApiError('UNAUTHENTICATED', 'The Firebase ID token is invalid or expired.', 401);
   }

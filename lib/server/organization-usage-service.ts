@@ -9,6 +9,10 @@ import { estimateFirestoreDocumentBytes, summarizeStorageFiles, usageAttentionRe
 
 const BUSINESS_COLLECTIONS = ['leads', 'clients', 'deals', 'tasks', 'activities', 'members'] as const;
 const inFlightReconciliations = new Set<string>();
+const COVERAGE_NOTES = [
+  'Database estimate covers the organization, current license/settings, leads, clients, deals, tasks, activities and members. Sales, payments, catalog and nested histories/documents are excluded.',
+  'File estimate covers only organization-scoped files; legacy files outside that namespace are excluded.',
+];
 
 function safeDate(value: unknown) {
   if (typeof value === 'string') return value;
@@ -32,10 +36,22 @@ export function storedUsage(data: Record<string, unknown> | undefined): Organiza
   const storageLimitBytes = typeof data?.storageLimitBytes === 'number' && Number.isFinite(data.storageLimitBytes) && data.storageLimitBytes > 0 ? data.storageLimitBytes : null;
   const breakdownData = data?.breakdown && typeof data.breakdown === 'object' ? data.breakdown as Record<string, unknown> : {};
   const breakdown = { leads: safeInteger(breakdownData.leads), clients: safeInteger(breakdownData.clients), deals: safeInteger(breakdownData.deals), tasks: safeInteger(breakdownData.tasks), activities: safeInteger(breakdownData.activities), members: safeInteger(breakdownData.members), files: safeInteger(data?.fileCount ?? breakdownData.files) };
-  const usageAvailable = typeof data?.lastCalculatedAt !== 'undefined' && typeof data?.totalBytesEstimated === 'number' && typeof data?.firestoreBytesEstimated === 'number';
-  const status = usageStatus(storageBytes, storageLimitBytes);
+  const lastCalculatedAt = safeDate(data?.lastCalculatedAt);
+  const usageAvailable = Boolean(lastCalculatedAt && Number.isFinite(Date.parse(lastCalculatedAt)))
+    && typeof data?.totalBytesEstimated === 'number' && Number.isFinite(data.totalBytesEstimated) && data.totalBytesEstimated >= 0
+    && typeof data?.firestoreBytesEstimated === 'number' && Number.isFinite(data.firestoreBytesEstimated) && data.firestoreBytesEstimated >= 0;
+  const storageAvailable = usageAvailable && data?.storageAvailable === true
+    && typeof data.storageBytes === 'number' && Number.isFinite(data.storageBytes) && data.storageBytes >= 0;
+  const status = storageAvailable ? usageStatus(storageBytes, storageLimitBytes) : { usagePercent: null, status: 'UNAVAILABLE' as const };
+  const usageCoverage = data?.usageCoverage === 'PARTIAL' ? 'PARTIAL' as const : 'UNKNOWN' as const;
+  const usageNotes = [...COVERAGE_NOTES];
+  if (!storageAvailable) usageNotes.push('File usage is unavailable or unverified. Recalculate with storage configured to measure organization files.');
+  if (usageCoverage === 'UNKNOWN') usageNotes.push('This legacy summary has unverified coverage. Recalculate to refresh its coverage information.');
   return {
     usageAvailable,
+    storageAvailable,
+    usageCoverage,
+    usageNotes,
     storageBytes,
     firestoreBytesEstimated: safeNumber(data?.firestoreBytesEstimated),
     totalBytesEstimated: safeNumber(data?.totalBytesEstimated, storageBytes + safeNumber(data?.firestoreBytesEstimated)),
@@ -45,19 +61,23 @@ export function storedUsage(data: Record<string, unknown> | undefined): Organiza
     storageLimitBytes,
     usagePercent: status.usagePercent,
     usageStatus: status.status,
-    lastCalculatedAt: safeDate(data?.lastCalculatedAt),
+    lastCalculatedAt,
     lastReconciledAt: safeDate(data?.lastReconciledAt),
   };
 }
 
 async function scanStorage(orgId: string) {
   const bucketName = process.env.FIREBASE_STORAGE_BUCKET || process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET;
-  if (!bucketName) return { storageBytes: 0, fileCount: 0 };
+  if (!bucketName) return { storageAvailable: false, storageBytes: 0, fileCount: 0 };
   const [files] = await getStorage().bucket(bucketName).getFiles({ prefix: `organizations/${orgId}/` });
-  return summarizeStorageFiles(files);
+  if (files.some((file) => {
+    const size = file.metadata.size;
+    return !((typeof size === 'number' || (typeof size === 'string' && /^\d+$/.test(size))) && Number.isSafeInteger(Number(size)) && Number(size) >= 0);
+  })) throw new ApiError('INTERNAL_ERROR', 'File sizes are unavailable. Existing usage data was preserved.', 503);
+  return { ...summarizeStorageFiles(files), storageAvailable: true };
 }
 
-async function calculateUsage(orgId: string, storageLimitBytes: number | null) {
+async function calculateUsage(orgId: string) {
   const organizationRef = adminDb.collection('organizations').doc(orgId);
   const [organizationSnapshot, licenseSnapshot, settingsSnapshot, ...collectionSnapshots] = await Promise.all([
     organizationRef.get(),
@@ -79,18 +99,16 @@ async function calculateUsage(orgId: string, storageLimitBytes: number | null) {
   const recordCount = BUSINESS_COLLECTIONS.reduce((total, collectionName) => total + breakdown[collectionName], 0);
   const totalBytesEstimated = storage.storageBytes + firestoreBytesEstimated;
   const timestamps = Timestamp.now();
-  const status = usageStatus(storage.storageBytes, storageLimitBytes);
   return {
     usageAvailable: true,
+    storageAvailable: storage.storageAvailable,
+    usageCoverage: 'PARTIAL' as const,
     storageBytes: storage.storageBytes,
     firestoreBytesEstimated,
     totalBytesEstimated,
     fileCount: storage.fileCount,
     recordCount,
     breakdown,
-    storageLimitBytes,
-    usagePercent: status.usagePercent,
-    usageStatus: status.status,
     lastCalculatedAt: timestamps.toDate().toISOString(),
     lastReconciledAt: timestamps.toDate().toISOString(),
     _timestamp: timestamps,
@@ -112,20 +130,19 @@ export async function recalculateOrganizationUsage(orgId: string, actor: Authent
   try {
     const organizationRef = adminDb.collection('organizations').doc(orgId);
     const usageRef = organizationRef.collection('usage').doc('current');
-    const existingUsageSnapshot = await usageRef.get();
-    const existingUsageData = existingUsageSnapshot.exists ? existingUsageSnapshot.data() || {} : {};
-    const storageLimitBytes = typeof existingUsageData.storageLimitBytes === 'number' && existingUsageData.storageLimitBytes > 0 ? existingUsageData.storageLimitBytes : null;
-    const calculated = await calculateUsage(orgId, storageLimitBytes);
+    const calculated = await calculateUsage(orgId);
     const auditRef = adminDb.collection('platformAuditLogs').doc();
-    const writeData = { storageBytes: calculated.storageBytes, firestoreBytesEstimated: calculated.firestoreBytesEstimated, totalBytesEstimated: calculated.totalBytesEstimated, fileCount: calculated.fileCount, recordCount: calculated.recordCount, breakdown: calculated.breakdown, storageLimitBytes: calculated.storageLimitBytes, lastCalculatedAt: calculated._timestamp, lastReconciledAt: calculated._timestamp, updatedAt: FieldValue.serverTimestamp(), updatedBy: actor.uid };
-    await adminDb.runTransaction(async (transaction) => {
+    return await adminDb.runTransaction(async (transaction) => {
       const organizationSnapshot = await transaction.get(organizationRef);
       const currentUsageSnapshot = await transaction.get(usageRef);
       if (!organizationSnapshot.exists) throw new ApiError('NOT_FOUND', 'Organization not found.', 404);
+      const currentUsage = currentUsageSnapshot.data() || {};
+      const storageLimitBytes = typeof currentUsage.storageLimitBytes === 'number' && Number.isFinite(currentUsage.storageLimitBytes) && currentUsage.storageLimitBytes > 0 ? currentUsage.storageLimitBytes : null;
+      const writeData = { ...currentUsage, storageAvailable: calculated.storageAvailable, usageCoverage: calculated.usageCoverage, storageBytes: calculated.storageBytes, firestoreBytesEstimated: calculated.firestoreBytesEstimated, totalBytesEstimated: calculated.totalBytesEstimated, fileCount: calculated.fileCount, recordCount: calculated.recordCount, breakdown: calculated.breakdown, storageLimitBytes, lastCalculatedAt: calculated._timestamp, lastReconciledAt: calculated._timestamp, updatedAt: FieldValue.serverTimestamp(), updatedBy: actor.uid };
       transaction.set(usageRef, writeData);
-      transaction.set(auditRef, { action: 'ORGANIZATION_USAGE_RECALCULATED', actorUid: actor.uid, actorEmail: actor.email, actorRole: actor.role, targetType: 'ORGANIZATION_USAGE', targetId: orgId, organizationId: orgId, previousValue: currentUsageSnapshot.exists ? currentUsageSnapshot.data() : null, newValue: { storageBytes: calculated.storageBytes, firestoreBytesEstimated: calculated.firestoreBytesEstimated, totalBytesEstimated: calculated.totalBytesEstimated, fileCount: calculated.fileCount, recordCount: calculated.recordCount, breakdown: calculated.breakdown, storageLimitBytes: calculated.storageLimitBytes }, metadata: {}, createdAt: FieldValue.serverTimestamp() });
+      transaction.set(auditRef, { action: 'ORGANIZATION_USAGE_RECALCULATED', actorUid: actor.uid, actorEmail: actor.email, actorRole: actor.role, targetType: 'ORGANIZATION_USAGE', targetId: orgId, organizationId: orgId, previousValue: currentUsageSnapshot.exists ? currentUsageSnapshot.data() : null, newValue: { storageAvailable: calculated.storageAvailable, usageCoverage: calculated.usageCoverage, storageBytes: calculated.storageBytes, firestoreBytesEstimated: calculated.firestoreBytesEstimated, totalBytesEstimated: calculated.totalBytesEstimated, fileCount: calculated.fileCount, recordCount: calculated.recordCount, breakdown: calculated.breakdown, storageLimitBytes }, metadata: {}, createdAt: FieldValue.serverTimestamp() });
+      return storedUsage({ ...writeData, lastCalculatedAt: calculated.lastCalculatedAt, lastReconciledAt: calculated.lastReconciledAt });
     });
-    return storedUsage({ ...writeData, lastCalculatedAt: calculated.lastCalculatedAt, lastReconciledAt: calculated.lastReconciledAt });
   } finally { inFlightReconciliations.delete(orgId); }
 }
 

@@ -3,7 +3,7 @@ import { adminDb } from './firebase-admin-core';
 import { ApiError } from './api-errors';
 import { enumValue, integer, isoDate, optionalString, requiredString, validateOrganizationId } from './request';
 import { AuthenticatedPlatformAdmin } from './platform-admin';
-import { buildOrganizationLicenseMirror, LICENSE_PLAN_CONFIG, LICENSE_PLANS, parseCanonicalLicense, resolveCanonicalLicense } from '../license-contract';
+import { buildOrganizationLicenseState, LICENSE_PLAN_CONFIG, LICENSE_PLANS, parseCanonicalLicense, resolveCanonicalLicense } from '../license-contract';
 import { deriveLicenseAdminState } from './license-admin-state';
 
 export type LicenseMutationAction = 'activate' | 'repair-license' | 'edit-details' | 'renew' | 'extend-trial' | 'convert-to-paid' | 'extend-subscription' | 'change-plan' | 'change-seat-limit' | 'suspend' | 'expire' | 'reactivate';
@@ -38,6 +38,7 @@ export async function mutateLicense(orgId: string, action: Action, body: Record<
     const licenseSnapshot = await transaction.get(licenseRef);
     const activeMembersSnapshot = await transaction.get(organizationRef.collection('members').where('status', '==', 'active'));
     if (!organizationSnapshot.exists) throw new ApiError('NOT_FOUND', 'Organization not found.', 404);
+    if (!['trial', 'active', 'expired', 'suspended'].includes(organizationSnapshot.data()?.status)) throw new ApiError('CONFLICT', 'Organization lifecycle requires attention before changing its license.', 409);
     const current = licenseSnapshot.exists ? licenseSnapshot.data() || {} : null;
     if (!current && !['activate'].includes(action)) throw new ApiError('CONFLICT', 'No canonical license exists for this organization.', 409);
     const currentLicense = current ? parseCanonicalLicense(current) : null;
@@ -200,7 +201,7 @@ export async function mutateLicense(orgId: string, action: Action, body: Record<
 
     const canonicalNext = parseCanonicalLicense(nextLicense);
     if (!canonicalNext) throw new ApiError('INVALID_REQUEST', 'The mutation would produce an invalid canonical license.', 400);
-    const mirrors = buildOrganizationLicenseMirror(canonicalNext, now.toMillis());
+    const mirrors = buildOrganizationLicenseState(canonicalNext, now.toMillis());
     nextLicense.updatedAt = FieldValue.serverTimestamp(); nextLicense.updatedBy = actor.uid;
     transaction.set(licenseRef, nextLicense, { merge: true });
     transaction.set(organizationRef, { ...mirrors, updatedAt: FieldValue.serverTimestamp() }, { merge: true });

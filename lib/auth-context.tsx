@@ -7,7 +7,7 @@ import {
   signInWithPopup,
   signOut as firebaseSignOut,
 } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, onSnapshot } from 'firebase/firestore';
 import React, { createContext, ReactNode, useContext, useEffect, useMemo, useState } from 'react';
 import { PlatformAdmin, PlatformAdminRole, PlatformAdminStatus } from './types';
 import { firebaseAuth, firestore } from './firebase';
@@ -53,10 +53,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    return onAuthStateChanged(firebaseAuth, async (nextUser) => {
+    let generation = 0;
+    let disposed = false;
+    let unsubscribeProfile = () => {};
+    const unsubscribeAuth = onAuthStateChanged(firebaseAuth, (nextUser) => {
+      if (disposed) return;
+      const currentGeneration = ++generation;
+      unsubscribeProfile();
       setError(null);
       setUser(nextUser);
       setPlatformAdmin(null);
+      setStatus('loading');
 
       if (!nextUser) {
         setStatus('signed-out');
@@ -64,28 +71,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       try {
-        const adminSnapshot = await getDoc(doc(firestore, 'platformAdmins', nextUser.uid));
-        const nextAdmin = adminSnapshot.exists()
-          ? platformAdminFromSnapshot(nextUser, adminSnapshot.data())
-          : null;
+        unsubscribeProfile = onSnapshot(doc(firestore, 'platformAdmins', nextUser.uid), (adminSnapshot) => {
+          if (currentGeneration !== generation) return;
+          setError(null);
+          const nextAdmin = adminSnapshot.exists()
+            ? platformAdminFromSnapshot(nextUser, adminSnapshot.data())
+            : null;
 
-        if (!nextAdmin) {
-          setStatus('unauthorized');
-          return;
-        }
+          if (!nextAdmin) {
+            setPlatformAdmin(null);
+            setStatus('unauthorized');
+            return;
+          }
 
-        setPlatformAdmin(nextAdmin);
-        if (nextAdmin.status === 'DISABLED') {
-          setStatus('disabled');
-          return;
-        }
-        setStatus('authorized');
+          setPlatformAdmin(nextAdmin);
+          if (nextAdmin.status === 'DISABLED') {
+            setStatus('disabled');
+            return;
+          }
+          setStatus('authorized');
+        }, (authError) => {
+          if (currentGeneration !== generation) return;
+          console.error('Unable to verify developer authorization.', authError);
+          setPlatformAdmin(null);
+          setError('We could not verify your developer access. Please try again.');
+          setStatus('error');
+        });
       } catch (authError) {
         console.error('Unable to verify developer authorization.', authError);
         setError('We could not verify your developer access. Please try again.');
         setStatus('error');
       }
     });
+    return () => { disposed = true; generation += 1; unsubscribeProfile(); unsubscribeAuth(); };
   }, []);
 
   const value = useMemo<AuthContextValue>(() => ({

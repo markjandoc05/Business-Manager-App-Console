@@ -60,9 +60,10 @@ export type ConsoleMembership = OrganizationMember & { organization: string; org
 export const getUsers = () => callConsoleAdminApi<ConsoleMembership[]>('/api/users', {}, 'GET');
 export const getLicensing = () => callConsoleAdminApi<Organization[]>('/api/licensing', {}, 'GET');
 export type ConsoleAuditLog = { id: string; action?: string; actorEmail?: string; actorRole?: string; targetType?: string; targetId?: string; organizationId?: string; previousValue?: unknown; newValue?: unknown; createdAt?: string };
-export const getAuditLogs = (limit = 25, cursor?: string) => {
+export const getAuditLogs = (limit = 25, cursor?: string, organizationId?: string) => {
   const params = new URLSearchParams({ limit: String(limit) });
   if (cursor) params.set('cursor', cursor);
+  if (organizationId) params.set('organizationId', organizationId);
   return callConsoleAdminApi<{ items: ConsoleAuditLog[]; nextCursor?: string; pageInfo?: { hasNextPage: boolean; hasPreviousPage: boolean; nextCursor?: string } }>(`/api/audit-logs?${params.toString()}`, {}, 'GET');
 };
 export const createPlatformAdmin = (body: { uid: string; role: string; status?: string }) => callConsoleAdminApi<Record<string, unknown>>('/api/platform-admins', body);

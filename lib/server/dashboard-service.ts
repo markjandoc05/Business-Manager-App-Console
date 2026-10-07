@@ -3,6 +3,7 @@ import { deriveLicenseAdminState, deriveOrganizationAdminState } from './license
 import { resolveOrganizationLocaleSettingsFromData } from './organization-locale-settings';
 import { storedUsage } from './organization-usage-service';
 import { usageAttentionReason } from '../organization-usage';
+import { mapConsoleReads, readCollectionPages } from './bounded-console-reads';
 import { auditDetail, attentionPriority, attentionReasonLabels, humanizeAuditAction, primaryDashboardAction, seatUtilization as calculateSeatUtilization } from '../dashboard-model';
 import type { DashboardActivityItem, DashboardAttentionItem, DashboardMetrics, DashboardSeatUtilizationItem, DashboardUpcomingLicenseAction, OrganizationAttentionReason } from '../types';
 
@@ -26,8 +27,8 @@ function firstAttentionReason(reasons: OrganizationAttentionReason[]) { return [
 function countReason(reasons: OrganizationAttentionReason[], targets: OrganizationAttentionReason[]) { return reasons.some((reason) => targets.includes(reason)) ? 1 : 0; }
 
 export async function getDashboardMetrics(now = Date.now()): Promise<DashboardMetrics> {
-  const organizationSnapshot = await adminDb.collection('organizations').get();
-  const rows = await Promise.all(organizationSnapshot.docs.map(async (organization) => {
+  const organizations = await readCollectionPages(adminDb.collection('organizations'));
+  const rows = await mapConsoleReads(organizations, async (organization) => {
     const organizationData = organization.data() || {};
     const [licenseSnapshot, settingsSnapshot, activeMembersSnapshot, usageSnapshot] = await Promise.all([
       organization.ref.collection('license').doc('current').get(),
@@ -44,7 +45,7 @@ export async function getDashboardMetrics(now = Date.now()): Promise<DashboardMe
     const storageReason = usage.usageAvailable ? usageAttentionReason(usage.usageStatus) : undefined;
     const attentionReasons = storageReason ? [...organizationAdminState.attentionReasons, storageReason] : organizationAdminState.attentionReasons;
     return { id: organization.id, name: typeof organizationData.name === 'string' && organizationData.name.trim() ? organizationData.name : 'Unnamed organization', licenseAdminState, organizationAdminState, attentionReasons, usage };
-  }));
+  });
 
   const attentionSummary = {
     invalidLicense: rows.reduce((total, row) => total + countReason(row.attentionReasons, ['INVALID_LICENSE']), 0),

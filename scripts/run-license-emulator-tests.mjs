@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const projectId = 'demo-bsm-console';
-if (!process.env.FIRESTORE_EMULATOR_HOST || !process.env.FIREBASE_AUTH_EMULATOR_HOST) {
+if (![process.env.FIRESTORE_EMULATOR_HOST, process.env.FIREBASE_AUTH_EMULATOR_HOST].every(value => /^(127\.0\.0\.1|localhost):\d+$/.test(value || ''))) {
   throw new Error('Refusing to run Console licensing tests without both Firebase emulator hosts.');
 }
 
@@ -20,7 +20,7 @@ const environment = {
 };
 
 const tsx = fileURLToPath(new URL('../node_modules/tsx/dist/cli.mjs', import.meta.url));
-for (const testFile of ['scripts/check-license-integration-imports.mjs', 'tests/console-license-integration.test.mjs', 'tests/console-admin-controls.integration.test.mjs', 'tests/organization-usage.integration.test.mjs', 'tests/plan-seat.integration.test.mjs']) {
+for (const testFile of ['scripts/check-license-integration-imports.mjs', 'tests/console-license-integration.test.mjs', 'tests/console-admin-controls.integration.test.mjs', 'tests/organization-usage.integration.test.mjs', 'tests/plan-seat.integration.test.mjs', 'tests/platform-admin-revocation.integration.test.mjs']) {
   const result = spawnSync(process.execPath, [tsx, '--test', testFile], { env: environment, stdio: 'inherit' });
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);

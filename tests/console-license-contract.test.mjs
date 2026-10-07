@@ -126,7 +126,7 @@ test('the required organization mirror is derived deterministically, including m
   const mirror = buildOrganizationLicenseMirror(canonical, Date.now());
   assert.equal(mirror.maxUsers, 5);
   assert.equal(mirror.licenseStatus, 'ACTIVE');
-  assert.equal(compareOrganizationLicenseMirror(canonical, mirror).status, 'CONSISTENT');
+  assert.equal(compareOrganizationLicenseMirror(canonical, { ...mirror, status: 'active' }).status, 'CONSISTENT');
   assert.equal(compareOrganizationLicenseMirror(canonical, { ...mirror, maxUsers: 3 }).status, 'DRIFTED');
 });
 
@@ -137,12 +137,12 @@ test('mirror reader distinguishes missing, invalid, and drifted canonical state'
   assert.equal(invalid.status, 'INVALID_CANONICAL_LICENSE');
   const drifted = await loadLicenseMirrorState({ firestore: fakeFirestore({ licenseStatus: 'ACTIVE', licenseWriteEnabled: true, licenseExpiresAt: undefined, maxUsers: 3 }, { ...license('ACTIVE'), maxUsers: 5 }), organizationId: 'org-a' });
   assert.equal(drifted.status, 'DRIFTED');
-  assert.deepEqual(drifted.differences.map(({ field }) => field), ['licenseExpiresAt', 'maxUsers']);
+  assert.deepEqual(drifted.differences.map(({ field }) => field), ['licenseExpiresAt', 'maxUsers', 'status']);
 });
 
 test('all license mutations use the centralized mirror helper', () => {
   const service = fs.readFileSync(new URL('../lib/server/license-service.ts', import.meta.url), 'utf8');
-  assert.match(service, /buildOrganizationLicenseMirror\(canonicalNext/);
+  assert.match(service, /buildOrganizationLicenseState\(canonicalNext/);
   assert.match(service, /transaction\.set\(organizationRef, \{ \.\.\.mirrors/);
 });
 
@@ -403,6 +403,6 @@ test('login activity is displayed from membership data without per-member reads'
   assert.match(dialogs, /Last Failed Login/);
   assert.match(dialogs, /Latest Login Status/);
   assert.match(dialogs, /Failure Reason/);
-  assert.match(readService, /organizationSnapshot\.ref\.collection\('members'\)\.get\(\)/);
+  assert.match(readService, /readCollectionPages\(organizationSnapshot\.ref\.collection\('members'\)\)/);
   assert.doesNotMatch(readService, /adminAuth\.getUser/);
 });

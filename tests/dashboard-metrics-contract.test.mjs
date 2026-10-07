@@ -64,8 +64,8 @@ test('V1.1N bounds audit pages and persists a lightweight attention panel', () =
   assert.match(service, /orderBy\('createdAt', 'desc'\)\.limit/);
   assert.match(auditService, /startAfter\(cursorSnapshot\)/);
   assert.match(auditService, /pageInfo: \{ hasNextPage: Boolean\(nextCursor\), hasPreviousPage: Boolean\(cursor\), nextCursor \}/);
-  assert.match(apiClient, /getAuditLogs = \(limit = 25, cursor\?: string\)/);
-  assert.match(auditLogs, /getAuditLogs\(PAGE_SIZE, pageCursor\)/);
+  assert.match(apiClient, /getAuditLogs = \(limit = 25, cursor\?: string, organizationId\?: string\)/);
+  assert.match(auditLogs, /getAuditLogs\(PAGE_SIZE, pageCursor, organizationFilter/);
   assert.match(auditLogs, /Previous audit log page/);
   assert.match(auditLogs, /Next audit log page/);
   assert.match(dashboard, /bsm-console-dashboard-attention-collapsed/);

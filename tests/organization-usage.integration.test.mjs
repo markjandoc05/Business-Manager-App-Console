@@ -65,7 +65,9 @@ test('usage reads are role-gated and reconciliation stores bounded operational s
   await assert.rejects(() => setOrganizationStorageLimit(orgId, 1024, supportActor), (error) => error.status === 403);
   const limited = await setOrganizationStorageLimit(orgId, 1024 * 1024, superActor);
   assert.equal(limited.storageLimitBytes, 1024 * 1024);
-  assert.equal(limited.usageStatus, 'NORMAL');
+  assert.equal(limited.usageStatus, 'UNAVAILABLE');
+  assert.equal(limited.storageAvailable, false);
+  assert.equal(limited.usageCoverage, 'PARTIAL');
   const emptyId = `usage-empty-${suffix}`;
   await adminDb.collection('organizations').doc(emptyId).set({ name: 'Empty Usage Organization' });
   const empty = await recalculateOrganizationUsage(emptyId, superActor);

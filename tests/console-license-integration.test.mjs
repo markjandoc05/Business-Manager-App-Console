@@ -79,6 +79,7 @@ async function readState() {
   return comparable({
     license: licenseSnapshot.data() || null,
     mirrors: {
+      status: organization.status,
       licenseStatus: organization.licenseStatus,
       licenseWriteEnabled: organization.licenseWriteEnabled,
       licenseExpiresAt: organization.licenseExpiresAt,
@@ -105,6 +106,7 @@ async function expectSuccess(token, action, body, expectedStatus, expectedAuditA
   assert.equal(result.body.success, true);
   const state = await readState();
   assert.equal(state.license.status, state.mirrors.licenseStatus);
+  assert.equal(state.mirrors.status, state.mirrors.licenseStatus.toLowerCase());
   assert.equal(state.license.maxUsers, state.mirrors.maxUsers);
   assert.equal(state.mirrors.licenseWriteEnabled, state.license.status === 'TRIAL' || state.license.status === 'ACTIVE');
   if (state.mirrors.licenseWriteEnabled) {
@@ -128,7 +130,7 @@ test('Phase 2 licensing routes authorize real emulator callers and preserve atom
   const inactive = await createUser('inactive');
   const tenant = await createUser('tenant-admin');
 
-  await organizationRef.set({ name: 'License Integration Organization', status: 'ACTIVE' });
+  await organizationRef.set({ name: 'License Integration Organization', status: 'trial' });
   await organizationRef.collection('members').doc(tenant.localId).set({ uid: tenant.localId, role: 'ADMIN', status: 'active' });
   await organizationRef.collection('members').doc('active-member-2').set({ uid: 'active-member-2', role: 'USER', status: 'active' });
   await adminDb.collection('platformAdmins').doc(superAdmin.localId).set({ status: 'ACTIVE', role: 'SUPER_ADMIN', email: superAdmin.email });

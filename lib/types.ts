@@ -48,7 +48,7 @@ export interface LicenseActionPayload {
 
 export type OrganizationPlan = 'TRIAL' | 'SOLO' | 'STARTER' | 'TEAM' | 'LEGACY';
 
-export type OrganizationUsageStatus = 'NO_LIMIT' | 'NORMAL' | 'WARNING' | 'HIGH' | 'FULL';
+export type OrganizationUsageStatus = 'NO_LIMIT' | 'NORMAL' | 'WARNING' | 'HIGH' | 'FULL' | 'UNAVAILABLE';
 
 export interface OrganizationUsageBreakdown {
   leads: number;
@@ -62,6 +62,9 @@ export interface OrganizationUsageBreakdown {
 
 export interface OrganizationUsage {
   usageAvailable: boolean;
+  storageAvailable: boolean;
+  usageCoverage: 'PARTIAL' | 'UNKNOWN';
+  usageNotes: string[];
   storageBytes: number;
   firestoreBytesEstimated: number;
   totalBytesEstimated: number;

@@ -9,6 +9,7 @@ export async function GET(request: NextRequest) {
     const url = new URL(request.url);
     const limit = Number(url.searchParams.get('limit') || 100);
     const cursor = url.searchParams.get('cursor') || undefined;
-    return successResponse(await listConsoleAuditLogs(Number.isFinite(limit) ? limit : 100, cursor));
+    const organizationId = url.searchParams.get('organizationId') || undefined;
+    return successResponse(await listConsoleAuditLogs(Number.isFinite(limit) ? limit : 100, cursor, organizationId));
   } catch (error) { return errorResponse(error); }
 }

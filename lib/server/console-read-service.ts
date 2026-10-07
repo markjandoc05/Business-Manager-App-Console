@@ -4,6 +4,8 @@ import { parseCanonicalLicense, resolveCanonicalLicense } from '../license-contr
 import { deriveLicenseAdminState, deriveOrganizationAdminState } from './license-admin-state';
 import { resolveOrganizationLocaleSettings } from './organization-locale-settings';
 import { validateOrganizationId } from './request';
+import { ApiError } from './api-errors';
+import { mapConsoleReads, readCollectionPages } from './bounded-console-reads';
 import type { OrganizationMemberStatus } from '../types';
 
 function safeDate(value: unknown): string | undefined {
@@ -89,8 +91,8 @@ async function organizationView(snapshot: DocumentSnapshot, now = Date.now()) {
 }
 
 export async function listConsoleOrganizations() {
-  const snapshot = await adminDb.collection('organizations').get();
-  return Promise.all(snapshot.docs.map((item) => organizationView(item)));
+  const organizations = await readCollectionPages(adminDb.collection('organizations'));
+  return mapConsoleReads(organizations, (item) => organizationView(item));
 }
 
 export async function getConsoleOrganization(orgId: string) {
@@ -98,8 +100,8 @@ export async function getConsoleOrganization(orgId: string) {
   const organizationSnapshot = await adminDb.collection('organizations').doc(orgId).get();
   if (!organizationSnapshot.exists) return null;
   const organization = await organizationView(organizationSnapshot);
-  const membersSnapshot = await organizationSnapshot.ref.collection('members').get();
-  const members = membersSnapshot.docs.map((item) => {
+  const membersSnapshot = await readCollectionPages(organizationSnapshot.ref.collection('members'));
+  const members = membersSnapshot.map((item) => {
     const data = item.data();
     return {
       id: item.id,
@@ -121,11 +123,11 @@ export async function getConsoleOrganization(orgId: string) {
 }
 
 export async function listConsoleMemberships() {
-  const organizations = await adminDb.collection('organizations').get();
-  const rows = await Promise.all(organizations.docs.map(async (organization) => {
+  const organizations = await readCollectionPages(adminDb.collection('organizations'));
+  const rows = await mapConsoleReads(organizations, async (organization) => {
     const view = await organizationView(organization);
-    const members = await organization.ref.collection('members').get();
-    return members.docs.map((item) => {
+    const members = await readCollectionPages(organization.ref.collection('members'));
+    return members.map((item) => {
       const data = item.data();
       return {
         id: item.id,
@@ -150,15 +152,21 @@ export async function listConsoleMemberships() {
         lastLoginFailureCode: typeof data.lastLoginFailureCode === 'string' ? data.lastLoginFailureCode : undefined,
       };
     });
-  }));
+  });
   return rows.flat();
 }
 
-export async function listConsoleAuditLogs(limit = 100, cursor?: string) {
-  let query = adminDb.collection('platformAuditLogs').orderBy('createdAt', 'desc').limit(Math.min(Math.max(limit, 1), 100));
+export async function listConsoleAuditLogs(limit = 100, cursor?: string, organizationId?: string) {
+  if (organizationId !== undefined) validateOrganizationId(organizationId);
+  const safeLimit = Number.isFinite(limit) ? Math.min(Math.max(Math.floor(limit), 1), 100) : 100;
+  let query = adminDb.collection('platformAuditLogs').orderBy('createdAt', 'desc').limit(safeLimit);
+  if (organizationId !== undefined) query = query.where('organizationId', '==', organizationId);
   if (cursor) {
+    if (cursor.length > 1500 || /[\u0000-\u001f/]/.test(cursor) || cursor === '.' || cursor === '..') throw new ApiError('INVALID_REQUEST', 'Invalid audit cursor.', 400);
     const cursorSnapshot = await adminDb.collection('platformAuditLogs').doc(cursor).get();
-    if (cursorSnapshot.exists) query = query.startAfter(cursorSnapshot);
+    if (!cursorSnapshot.exists) throw new ApiError('CONFLICT', 'Audit pagination changed. Reload the first page.', 409);
+    if (cursorSnapshot.data()?.createdAt === undefined || (organizationId !== undefined && cursorSnapshot.data()?.organizationId !== organizationId)) throw new ApiError('INVALID_REQUEST', 'Audit cursor does not belong to this filter.', 400);
+    query = query.startAfter(cursorSnapshot);
   }
   const snapshot = await query.get();
   const items = snapshot.docs.map((item) => {
@@ -176,7 +184,6 @@ export async function listConsoleAuditLogs(limit = 100, cursor?: string) {
       createdAt: safeDate(data.createdAt),
     };
   });
-  const safeLimit = Math.min(Math.max(limit, 1), 100);
   const nextCursor = snapshot.docs.length === safeLimit ? snapshot.docs.at(-1)?.id : undefined;
   return { items, nextCursor, pageInfo: { hasNextPage: Boolean(nextCursor), hasPreviousPage: Boolean(cursor), nextCursor } };
 }
